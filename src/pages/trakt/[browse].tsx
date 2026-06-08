@@ -5,7 +5,7 @@ import { withAuth } from '@/utils/withAuth';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { FunctionComponent } from 'react';
+import { FunctionComponent, useMemo } from 'react';
 import { Toaster } from 'react-hot-toast';
 
 type Category = {
@@ -17,6 +17,47 @@ type TraktBrowseProps = {
 	mediaType: string;
 	categories: Category[];
 };
+
+type RankedItem = {
+	imdbid: string;
+	title: string;
+	year: number;
+	appearances: number;
+};
+
+function rankItems(categories: Category[]): RankedItem[] {
+	const map = new Map<string, RankedItem>();
+
+	for (const category of categories) {
+		for (const items of Object.values(category.results)) {
+			for (const item of items) {
+				const imdbid =
+					item.movie?.ids?.imdb || item.show?.ids?.imdb || (item as any).ids?.imdb;
+				if (!imdbid) continue;
+
+				const existing = map.get(imdbid);
+				if (existing) {
+					existing.appearances++;
+				} else {
+					map.set(imdbid, {
+						imdbid,
+						title:
+							item.movie?.title ||
+							item.show?.title ||
+							(item as any).title ||
+							'Unknown',
+						year: item.movie?.year || item.show?.year || (item as any).year || 0,
+						appearances: 1,
+					});
+				}
+			}
+		}
+	}
+
+	return Array.from(map.values()).sort(
+		(a, b) => b.appearances - a.appearances || b.year - a.year
+	);
+}
 
 export const TraktBrowse: FunctionComponent = () => {
 	const router = useRouter();
@@ -33,6 +74,8 @@ export const TraktBrowse: FunctionComponent = () => {
 			return response.json();
 		}
 	);
+
+	const ranked = useMemo(() => (data ? rankItems(data.categories) : []), [data]);
 
 	if (!browseKey || (loading && !data)) {
 		return <div className="mx-2 my-1 min-h-screen bg-gray-900 text-white">Loading...</div>;
@@ -71,45 +114,11 @@ export const TraktBrowse: FunctionComponent = () => {
 				</Link>
 			</div>
 
-			<div className="flex w-full max-w-7xl flex-col items-center gap-6">
-				{data.categories.map((category, categoryIndex) => (
-					<div key={category.name} className="w-full">
-						<h2 className="mb-4 text-xl font-bold text-white">
-							<span className="text-yellow-500">{categoryIndex + 1}</span>{' '}
-							{category.name}
-						</h2>
-						{Object.entries(category.results).map(([listName, items]) => (
-							<div key={listName} className="mb-6 last:mb-0">
-								<h3 className="mb-4 text-lg font-semibold text-gray-300">
-									{listName}
-								</h3>
-								<div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10">
-									{items.map((item: TraktMediaItem) => {
-										const imdbid =
-											item.movie?.ids?.imdb ||
-											item.show?.ids?.imdb ||
-											(item as any).ids?.imdb;
-										if (!imdbid) {
-											return null;
-										}
-										const title =
-											item.movie?.title ||
-											item.show?.title ||
-											(item as any).title;
-										return (
-											<Link
-												key={imdbid}
-												href={`/${data.mediaType}/${imdbid}`}
-												className=""
-											>
-												<Poster imdbId={imdbid} title={title} />
-											</Link>
-										);
-									})}
-								</div>
-							</div>
-						))}
-					</div>
+			<div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10">
+				{ranked.map((item) => (
+					<Link key={item.imdbid} href={`/${data.mediaType}/${item.imdbid}`}>
+						<Poster imdbId={item.imdbid} title={item.title} />
+					</Link>
 				))}
 			</div>
 		</div>
