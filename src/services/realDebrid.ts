@@ -170,6 +170,12 @@ realDebridAxios.interceptors.response.use(
 			return Promise.reject(error);
 		}
 
+		// Don't retry 503s with an error_code — these are RD application errors
+		// (e.g. hoster_unavailable, hoster_not_free) that won't resolve on retry
+		if (status === 503 && error.response?.data?.error_code) {
+			return Promise.reject(error);
+		}
+
 		// Increment retry count
 		originalConfig.__retryCount++;
 
