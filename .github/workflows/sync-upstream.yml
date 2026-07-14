@@ -1,0 +1,88 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream main
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git remote add upstream https://github.com/debridmediamanager/debrid-media-manager.git 2>/dev/null             || git remote set-url upstream https://github.com/debridmediamanager/debrid-media-manager.git
+
+          git fetch --no-tags upstream main
+
+      - name: Merge upstream changes
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          upstream_sha="$(git rev-parse upstream/main)"
+          current_sha="$(git rev-parse HEAD)"
+
+          echo "Current fork commit: ${current_sha}"
+          echo "Current upstream commit: ${upstream_sha}"
+
+          if git merge-base --is-ancestor "${upstream_sha}" HEAD; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            echo "Fork already contains upstream ${upstream_sha}."
+            exit 0
+          fi
+
+          if ! git merge --no-edit upstream/main; then
+            git merge --abort || true
+            echo "::error::Automatic upstream merge failed because the fork has merge conflicts."
+            exit 1
+          fi
+
+          git push origin main
+          echo "changed=true" >> "${GITHUB_OUTPUT}"
+          echo "upstream_sha=${upstream_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Trigger Docker image build
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh api             --method POST             "repos/${GITHUB_REPOSITORY}/dispatches"             -f event_type="upstream-sync"
+
+      - name: Write summary
+        shell: bash
+        run: |
+          if [[ "${{ steps.merge.outputs.changed }}" == "true" ]]; then
+            echo "Merged upstream commit \`${{ steps.merge.outputs.upstream_sha }}\` into \`main\` and requested a new Docker build." >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "The fork is already synchronized with upstream." >> "${GITHUB_STEP_SUMMARY}"
+          fi
