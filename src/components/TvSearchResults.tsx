@@ -2,7 +2,7 @@ import type { DebridService } from '@/hooks/useAvailabilityCheck';
 import { SearchResult } from '@/services/mediasearch';
 import { downloadMagnetFile } from '@/utils/downloadMagnet';
 import { getEpisodeCountClass, getEpisodeCountLabel } from '@/utils/episodeUtils';
-import { borderColor, btnColor, btnIcon, btnLabel, fileSize } from '@/utils/results';
+import { borderColor, btnColor, btnIcon, btnLabel, fileSize, totalFileSize } from '@/utils/results';
 import {
 	Cast,
 	Eye as EyeIcon,
@@ -284,7 +284,7 @@ const TvSearchResults: React.FC<TvSearchResultsProps> = ({
 												videoCount={r.videoCount}
 											/>
 											<span className="ml-2">
-												Total: {fileSize(r.fileSize)} GB; Median:{' '}
+												Total: {fileSize(totalFileSize(r))} GB; Median:{' '}
 												{fileSize(r.medianFileSize)} GB
 												{r.trackerStats &&
 													!r.rdAvailable &&
@@ -305,7 +305,7 @@ const TvSearchResults: React.FC<TvSearchResultsProps> = ({
 										</div>
 									) : (
 										<div className="text-xs text-gray-300">
-											Total: {fileSize(r.fileSize)} GB
+											Total: {fileSize(totalFileSize(r))} GB
 											{r.trackerStats &&
 												!r.rdAvailable &&
 												!r.adAvailable &&
