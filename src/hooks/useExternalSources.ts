@@ -1,7 +1,53 @@
 import { FileData, SearchResult, hasSubstantialTitle } from '@/services/mediasearch';
 import { normalizeHash } from '@/utils/extractHashes';
 import axios from 'axios';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+
+// Addons render size as "💾 4.5 GB", but units vary between decimal (GB) and
+// binary (GiB), and some locales use a comma decimal separator. Returns MB.
+export function parseSizeToMb(text?: string): number {
+	if (!text) return 0;
+	const match = text.match(/💾\s*([\d.,]+)\s*(T|G|M)i?B/i);
+	if (!match) return 0;
+	const raw = match[1];
+	// "1,234.5" uses commas as thousand separators; "4,5" uses one as the decimal point
+	const value = parseFloat(raw.includes('.') ? raw.replace(/,/g, '') : raw.replace(',', '.'));
+	if (!isFinite(value)) return 0;
+	const unit = match[2].toUpperCase();
+	if (unit === 'T') return value * 1024 * 1024;
+	if (unit === 'G') return value * 1024;
+	return value;
+}
+
+// Comet takes its settings as a base64 JSON blob in the URL path. ElfHosted
+// refuses non-debrid searches, so a real debrid key is required - the old
+// "realdebrid=real-debrid-key" placeholder URL returns an OBSOLETE CONFIGURATION
+// stream and nothing else.
+export function buildCometConfig(rdKey: string): string {
+	return btoa(
+		JSON.stringify({
+			maxResultsPerResolution: 0,
+			maxSize: 0,
+			cachedOnly: false,
+			sortCachedUncachedTogether: true,
+			removeTrash: false,
+			resultFormat: ['all'],
+			debridServices: [{ service: 'realdebrid', apiKey: rdKey }],
+			enableTorrent: false,
+			deduplicateStreams: false,
+			// never let Comet enumerate the user's own debrid library
+			scrapeDebridAccountTorrents: false,
+			debridStreamProxyPassword: '',
+			languages: { required: [], allowed: [], exclude: [], preferred: [] },
+			resolutions: {},
+			options: {
+				remove_ranks_under: -10000000000,
+				allow_english_in_languages: false,
+				remove_unknown_languages: false,
+			},
+		})
+	);
+}
 
 export function useExternalSources(
 	rdKey: string | null,
@@ -10,6 +56,7 @@ export function useExternalSources(
 ) {
 	const hasAnyDebridKey = !!(rdKey || adKey || tbKey);
 	const [mediafusionHash, setMediafusionHash] = useState<string>('');
+	const cometConfig = useMemo(() => (rdKey ? buildCometConfig(rdKey) : ''), [rdKey]);
 
 	// Get or generate MediaFusion hash
 	useEffect(() => {
@@ -54,7 +101,9 @@ export function useExternalSources(
 					enable_catalogs: true,
 					enable_imdb_metadata: false,
 					max_size: 'inf',
-					max_streams_per_resolution: '10',
+					// Must be a number - MediaFusion rejects the whole config with
+					// "invalid type: string, expected u32" if this is quoted
+					max_streams_per_resolution: 10,
 					torrent_sorting_priority: [
 						{ key: 'language', direction: 'desc' },
 						{ key: 'cached', direction: 'desc' },
@@ -156,8 +205,6 @@ export function useExternalSources(
 	const transformExternalStream = useCallback(
 		(stream: any, source: string): SearchResult | null => {
 			let cleanTitle = '';
-			let fileSize = 0;
-			let hash = '';
 
 			if (source === 'torrentio' || source === 'peerflix') {
 				// Parse Torrentio/Peerflix format
@@ -166,21 +213,6 @@ export function useExternalSources(
 				if (titleParts.length > 1) {
 					cleanTitle = titleParts[0].trim();
 				}
-
-				const sizeMatch = stream.title?.match(/💾\s*([\d.]+)\s*(GB|MB|TB)/i);
-				if (sizeMatch) {
-					const size = parseFloat(sizeMatch[1]);
-					if (sizeMatch[2].toUpperCase() === 'TB') {
-						fileSize = size * 1024 * 1024;
-					} else if (sizeMatch[2].toUpperCase() === 'GB') {
-						fileSize = size * 1024;
-					} else {
-						fileSize = size;
-					}
-				}
-
-				const hashMatch = stream.url?.match(/\/([a-fA-F0-9]{40})\//);
-				hash = normalizeHash(hashMatch ? hashMatch[1] : stream.infoHash || '');
 			} else if (source === 'torrentsdb') {
 				// Parse TorrentsDB format
 				if (stream.title) {
@@ -193,20 +225,6 @@ export function useExternalSources(
 					const nameParts = stream.name.split('\n');
 					cleanTitle = nameParts[nameParts.length - 1].trim();
 				}
-
-				const sizeMatch = stream.title?.match(/💾\s*([\d.]+)\s*(GB|MB|TB)/i);
-				if (sizeMatch) {
-					const size = parseFloat(sizeMatch[1]);
-					if (sizeMatch[2].toUpperCase() === 'TB') {
-						fileSize = size * 1024 * 1024;
-					} else if (sizeMatch[2].toUpperCase() === 'GB') {
-						fileSize = size * 1024;
-					} else {
-						fileSize = size;
-					}
-				}
-
-				hash = normalizeHash(stream.infoHash || '');
 			} else {
 				// Parse Comet/MediaFusion format
 				if (stream.description) {
@@ -222,25 +240,24 @@ export function useExternalSources(
 				if (!cleanTitle) {
 					cleanTitle = stream.behaviorHints?.filename || stream.name || '';
 				}
-
-				if (stream.behaviorHints?.videoSize) {
-					fileSize = stream.behaviorHints.videoSize / (1024 * 1024);
-				} else if (stream.description) {
-					const sizeMatch = stream.description.match(/💾\s*([\d.]+)\s*(GB|MB|TB)/i);
-					if (sizeMatch) {
-						const size = parseFloat(sizeMatch[1]);
-						if (sizeMatch[2].toUpperCase() === 'TB') {
-							fileSize = size * 1024 * 1024;
-						} else if (sizeMatch[2].toUpperCase() === 'GB') {
-							fileSize = size * 1024;
-						} else {
-							fileSize = size;
-						}
-					}
-				}
-
-				hash = normalizeHash(stream.infoHash || '');
 			}
+
+			// Prefer the exact byte count when the addon reports one, then fall back to
+			// the 💾 field on either the title or the description. Addons are
+			// inconsistent about which of the two carries it, and some (Peerflix on
+			// non-cached results) omit it entirely - those land on 0 and get repaired
+			// by the debrid availability check.
+			const videoSize = stream.behaviorHints?.videoSize;
+			const fileSize = videoSize
+				? videoSize / (1024 * 1024)
+				: parseSizeToMb(stream.title) || parseSizeToMb(stream.description);
+
+			// Debrid-resolving addons drop infoHash and hand out an opaque playback
+			// URL, but the hash is still recoverable from the URL path or bingeGroup.
+			const hashFromUrl = stream.url?.match(/\/([a-fA-F0-9]{40})\//)?.[1];
+			const hashFromBingeGroup =
+				stream.behaviorHints?.bingeGroup?.match(/[a-fA-F0-9]{40}/)?.[0];
+			const hash = normalizeHash(hashFromUrl || stream.infoHash || hashFromBingeGroup || '');
 
 			if (!hash) return null;
 			if (!hasSubstantialTitle(cleanTitle)) return null;
@@ -339,10 +356,9 @@ export function useExternalSources(
 					url = `https://torrentio.strem.fun/realdebrid=real-debrid-key/stream/movie/${imdbId}.json`;
 					break;
 				case 'comet':
-					url = `https://comet.elfhosted.com/realdebrid=real-debrid-key/stream/movie/${imdbId}.json`;
-					break;
 				case 'comet-tor':
-					url = `https://comet.elfhosted.com/realdebrid=real-debrid-key/stream/movie/${imdbId}.json`;
+					if (!cometConfig) return [];
+					url = `https://comet.elfhosted.com/${cometConfig}/stream/movie/${imdbId}.json`;
 					break;
 				case 'mediafusion':
 					if (!mediafusionHash) return [];
@@ -370,7 +386,7 @@ export function useExternalSources(
 
 			return fetchExternalSource(url, source, imdbId);
 		},
-		[rdKey, hasAnyDebridKey, mediafusionHash, fetchExternalSource]
+		[rdKey, hasAnyDebridKey, cometConfig, mediafusionHash, fetchExternalSource]
 	);
 
 	const fetchEpisodeFromExternalSource = useCallback(
@@ -400,10 +416,9 @@ export function useExternalSources(
 					url = `https://torrentio.strem.fun/realdebrid=real-debrid-key/stream/series/${imdbId}:${seasonNum}:${episodeNum}.json`;
 					break;
 				case 'comet':
-					url = `https://comet.elfhosted.com/realdebrid=real-debrid-key/stream/series/${imdbId}:${seasonNum}:${episodeNum}.json`;
-					break;
 				case 'comet-tor':
-					url = `https://comet.elfhosted.com/realdebrid=real-debrid-key/stream/series/${imdbId}:${seasonNum}:${episodeNum}.json`;
+					if (!cometConfig) return [];
+					url = `https://comet.elfhosted.com/${cometConfig}/stream/series/${imdbId}:${seasonNum}:${episodeNum}.json`;
 					break;
 				case 'mediafusion':
 					if (!mediafusionHash) return [];
@@ -431,7 +446,7 @@ export function useExternalSources(
 
 			return fetchExternalSource(url, source, imdbId);
 		},
-		[rdKey, hasAnyDebridKey, mediafusionHash, fetchExternalSource]
+		[rdKey, hasAnyDebridKey, cometConfig, mediafusionHash, fetchExternalSource]
 	);
 
 	const getEnabledSources = useCallback(() => {
