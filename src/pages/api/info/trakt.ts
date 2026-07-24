@@ -124,12 +124,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 				}
 
 				try {
+					// `full:` key namespace: extended=full payloads carry release
+					// dates that the older cache entries lack. Bumping the key forces
+					// a fresh fetch instead of waiting out the 48h cache TTL.
 					let searchResults = await db.getSearchResults<TraktMediaItem[]>(
-						`trakt:${endpoint}`
+						`trakt:full:${endpoint}`
 					);
 					if (!searchResults?.length) {
 						searchResults = await getMediaData(traktClientID!, endpoint);
-						await db.saveSearchResults(`trakt:${endpoint}`, searchResults);
+						await db.saveSearchResults(`trakt:full:${endpoint}`, searchResults);
 					}
 					responseCache[endpoint] = {
 						lastUpdated: new Date().getTime(),
