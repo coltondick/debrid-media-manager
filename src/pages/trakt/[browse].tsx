@@ -64,11 +64,20 @@ function rankItems(categories: Category[]): RankedItem[] {
 		}
 	}
 
-	// Newest first by release date (movies) / first aired (shows); popularity
-	// (appearances across Trakt lists) breaks ties.
-	return Array.from(map.values()).sort(
-		(a, b) => b.dateTs - a.dateTs || b.appearances - a.appearances
-	);
+	// Already-released titles come first, newest → oldest. Upcoming titles
+	// (e.g. Trakt's "Most Anticipated") have future dates, so they're bucketed to
+	// the end, soonest → latest, instead of dominating the top. Popularity
+	// (appearances across Trakt lists) breaks ties within each bucket.
+	const now = Date.now();
+	return Array.from(map.values()).sort((a, b) => {
+		const aUpcoming = a.dateTs > now;
+		const bUpcoming = b.dateTs > now;
+		if (aUpcoming !== bUpcoming) return aUpcoming ? 1 : -1;
+		if (aUpcoming) {
+			return a.dateTs - b.dateTs || b.appearances - a.appearances;
+		}
+		return b.dateTs - a.dateTs || b.appearances - a.appearances;
+	});
 }
 
 export const TraktBrowse: FunctionComponent = () => {
