@@ -107,4 +107,53 @@ describe('MovieSearchResults', () => {
 		await userEvent.click(screen.getByRole('button', { name: /Download/i }));
 		expect(downloadSpy).toHaveBeenCalledWith('hash1');
 	});
+
+	describe('size display', () => {
+		it('shows the debrid file size when the source reported none', () => {
+			// Peerflix-style result: filename as title, no size, then RD reports
+			// the real bytes via the availability check
+			renderComponent({
+				movieMaxSize: '0',
+				filteredResults: [
+					{
+						...baseResult,
+						title: 'Michael.2026.BDRemux.2160p.HDR-DV.mkv',
+						fileSize: 0,
+						rdAvailable: true,
+						videoCount: 1,
+						medianFileSize: 80 * 1024,
+						biggestFileSize: 80 * 1024,
+						files: [
+							{
+								fileId: 1,
+								filename: 'Michael.2026.BDRemux.2160p.HDR-DV.mkv',
+								filesize: 80 * 1024 * 1024 * 1024,
+							},
+						],
+					},
+				],
+			});
+
+			expect(screen.getByText(/Total: 80\.00 GB/)).toBeTruthy();
+			expect(screen.queryByText(/Total: 0\.00 GB/)).toBeNull();
+		});
+
+		it('still shows 0.00 GB when nothing at all is known', () => {
+			renderComponent({
+				movieMaxSize: '0',
+				filteredResults: [
+					{
+						...baseResult,
+						fileSize: 0,
+						videoCount: 1,
+						medianFileSize: 0,
+						biggestFileSize: 0,
+						files: [],
+					},
+				],
+			});
+
+			expect(screen.getByText(/Total: 0\.00 GB/)).toBeTruthy();
+		});
+	});
 });

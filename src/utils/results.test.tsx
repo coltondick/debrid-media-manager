@@ -9,6 +9,7 @@ import {
 	sortByBiggest,
 	sortByMedian,
 	torrentPrefix,
+	totalFileSize,
 } from './results';
 
 describe('results utils', () => {
@@ -43,6 +44,45 @@ describe('results utils', () => {
 
 		it('handles large file sizes', () => {
 			expect(fileSize(10240000)).toBe('10000.00');
+		});
+	});
+
+	describe('totalFileSize', () => {
+		const result = (over: Partial<SearchResult> = {}) =>
+			({
+				fileSize: 0,
+				files: [],
+				biggestFileSize: 0,
+				...over,
+			}) as SearchResult;
+
+		it('uses the reported size when there is one', () => {
+			expect(totalFileSize(result({ fileSize: 4096, biggestFileSize: 3000 }))).toBe(4096);
+		});
+
+		it('falls back to the summed debrid file bytes when the size is missing', () => {
+			expect(
+				totalFileSize(
+					result({
+						files: [
+							{ fileId: 0, filename: 'a.mkv', filesize: 1024 * 1024 * 100 },
+							{ fileId: 1, filename: 'b.mkv', filesize: 1024 * 1024 * 50 },
+						],
+					})
+				)
+			).toBe(150);
+		});
+
+		it('falls back to biggestFileSize when there are no files either', () => {
+			expect(totalFileSize(result({ biggestFileSize: 2048 }))).toBe(2048);
+		});
+
+		it('returns 0 when nothing is known', () => {
+			expect(totalFileSize(result())).toBe(0);
+		});
+
+		it('tolerates a missing files array', () => {
+			expect(totalFileSize(result({ files: undefined, biggestFileSize: 512 }))).toBe(512);
 		});
 	});
 

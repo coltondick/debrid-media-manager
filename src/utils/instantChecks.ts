@@ -24,6 +24,20 @@ const calculateFileStats = (videoFiles: FileData[]) => {
 	};
 };
 
+// Debrid services report the exact bytes of every file, so use them to repair a
+// missing size. Scraped rows and external addons (Peerflix in particular) often
+// report fileSize 0, which otherwise renders as "0.00 GB" forever.
+const backfillMissingFileSize = <T extends SearchResult | EnrichedHashlistTorrent>(
+	torrent: T,
+	files: FileData[]
+) => {
+	if (!('medianFileSize' in torrent)) return;
+	const result = torrent as SearchResult;
+	if (result.fileSize > 0) return;
+	const total = files.reduce((acc, curr) => acc + (curr.filesize || 0), 0);
+	if (total > 0) result.fileSize = total / 1024 / 1024;
+};
+
 const updateTorrentTitle = (torrent: SearchResult, files: FileData[]) => {
 	if (files.length >= 2) {
 		const filenames = files.map((f) => f.filename);
@@ -115,6 +129,8 @@ const processRdInstantCheckByHashes = async <T extends SearchResult | EnrichedHa
 				updateTorrentTitle(torrent as SearchResult, torrent.files);
 				(torrent as SearchResult).fileSize =
 					torrent.files.reduce((acc, curr) => acc + curr.filesize, 0) / 1024 / 1024;
+			} else {
+				backfillMissingFileSize(torrent, torrent.files);
 			}
 
 			const videoFiles = torrent.files.filter((f) => isVideo({ path: f.filename }));
@@ -183,6 +199,8 @@ const processRdInstantCheck = async <T extends SearchResult | EnrichedHashlistTo
 				updateTorrentTitle(torrent as SearchResult, torrent.files);
 				(torrent as SearchResult).fileSize =
 					torrent.files.reduce((acc, curr) => acc + curr.filesize, 0) / 1024 / 1024;
+			} else {
+				backfillMissingFileSize(torrent, torrent.files);
 			}
 
 			const videoFiles = torrent.files.filter((f) => isVideo({ path: f.filename }));
@@ -263,6 +281,7 @@ const processAdInstantCheck = async <T extends SearchResult | EnrichedHashlistTo
 				const videoFiles = torrent.files.filter((f) => isVideo({ path: f.filename }));
 				const stats = calculateFileStats(videoFiles);
 				Object.assign(torrent, stats);
+				backfillMissingFileSize(torrent, torrent.files);
 			}
 
 			torrent.noVideos = checkVideoInFiles(magnetData.files);
@@ -352,6 +371,8 @@ const processAdInstantCheckDb = async <T extends SearchResult | EnrichedHashlist
 				updateTorrentTitle(torrent as SearchResult, torrent.files);
 				(torrent as SearchResult).fileSize =
 					torrent.files.reduce((acc, curr) => acc + curr.filesize, 0) / 1024 / 1024;
+			} else {
+				backfillMissingFileSize(torrent, torrent.files);
 			}
 
 			const videoFiles = torrent.files.filter((f) => isVideo({ path: f.filename }));
@@ -421,6 +442,7 @@ const processTbInstantCheck = async <T extends SearchResult | EnrichedHashlistTo
 				const videoFiles = torrent.files.filter((f) => isVideo({ path: f.filename }));
 				const stats = calculateFileStats(videoFiles);
 				Object.assign(torrent, stats);
+				backfillMissingFileSize(torrent, torrent.files);
 
 				torrent.noVideos = videoFiles.length === 0;
 				if (!torrent.noVideos) {

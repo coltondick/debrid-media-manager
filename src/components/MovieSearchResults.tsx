@@ -1,7 +1,7 @@
 import type { DebridService } from '@/hooks/useAvailabilityCheck';
 import { SearchResult } from '@/services/mediasearch';
 import { downloadMagnetFile } from '@/utils/downloadMagnet';
-import { borderColor, btnColor, btnIcon, btnLabel, fileSize } from '@/utils/results';
+import { borderColor, btnColor, btnIcon, btnLabel, fileSize, totalFileSize } from '@/utils/results';
 import { isVideo } from '@/utils/selectable';
 import {
 	Cast,
@@ -299,7 +299,7 @@ const MovieSearchResults = ({
 									</span>
 									{r.videoCount > 1 ? (
 										<span className="ml-2">
-											Total: {fileSize(r.fileSize)} GB; Biggest:{' '}
+											Total: {fileSize(totalFileSize(r))} GB; Biggest:{' '}
 											{fileSize(r.biggestFileSize)} GB
 											{r.trackerStats &&
 												!r.rdAvailable &&
@@ -319,7 +319,7 @@ const MovieSearchResults = ({
 										</span>
 									) : (
 										<span className="ml-2">
-											Total: {fileSize(r.fileSize)} GB
+											Total: {fileSize(totalFileSize(r))} GB
 											{r.trackerStats &&
 												!r.rdAvailable &&
 												!r.adAvailable &&
@@ -340,7 +340,7 @@ const MovieSearchResults = ({
 								</div>
 							) : (
 								<div className="text-xs text-gray-300">
-									Total: {fileSize(r.fileSize)} GB
+									Total: {fileSize(totalFileSize(r))} GB
 									{r.trackerStats &&
 										!r.rdAvailable &&
 										!r.adAvailable &&
