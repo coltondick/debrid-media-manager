@@ -22,8 +22,19 @@ type RankedItem = {
 	imdbid: string;
 	title: string;
 	year: number;
+	dateTs: number;
 	appearances: number;
 };
+
+// Sort key: movies use `released` (theatrical date), shows use `first_aired`
+// (series premiere). Both come from Trakt's extended=full payload; fall back to
+// the release year when the date is missing (e.g. a not-yet-refreshed cache).
+function getDateTs(media: any): number {
+	const raw = media?.released || media?.first_aired || null;
+	const parsed = raw ? Date.parse(raw) : NaN;
+	if (!isNaN(parsed)) return parsed;
+	return media?.year ? Date.parse(`${media.year}-01-01`) : 0;
+}
 
 function rankItems(categories: Category[]): RankedItem[] {
 	const map = new Map<string, RankedItem>();
@@ -31,8 +42,10 @@ function rankItems(categories: Category[]): RankedItem[] {
 	for (const category of categories) {
 		for (const items of Object.values(category.results)) {
 			for (const item of items) {
-				const imdbid =
-					item.movie?.ids?.imdb || item.show?.ids?.imdb || (item as any).ids?.imdb;
+				// Endpoints return the media either wrapped (`{ ..., movie }`) or
+				// as the bare object (e.g. movies/popular), so unwrap all shapes.
+				const media = (item.movie || item.show || item) as any;
+				const imdbid = media?.ids?.imdb;
 				if (!imdbid) continue;
 
 				const existing = map.get(imdbid);
@@ -41,12 +54,9 @@ function rankItems(categories: Category[]): RankedItem[] {
 				} else {
 					map.set(imdbid, {
 						imdbid,
-						title:
-							item.movie?.title ||
-							item.show?.title ||
-							(item as any).title ||
-							'Unknown',
-						year: item.movie?.year || item.show?.year || (item as any).year || 0,
+						title: media?.title || 'Unknown',
+						year: media?.year || 0,
+						dateTs: getDateTs(media),
 						appearances: 1,
 					});
 				}
@@ -54,8 +64,10 @@ function rankItems(categories: Category[]): RankedItem[] {
 		}
 	}
 
+	// Newest first by release date (movies) / first aired (shows); popularity
+	// (appearances across Trakt lists) breaks ties.
 	return Array.from(map.values()).sort(
-		(a, b) => b.appearances - a.appearances || b.year - a.year
+		(a, b) => b.dateTs - a.dateTs || b.appearances - a.appearances
 	);
 }
 

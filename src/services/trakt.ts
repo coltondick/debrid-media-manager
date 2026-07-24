@@ -58,8 +58,12 @@ export const getMediaData = async (
 			'trakt-api-key': client_id,
 		};
 
+		// extended=full enriches each item with release dates (movies: `released`,
+		// shows: `first_aired`) used for sorting the browse page. It does not add
+		// requests, so it has no rate-limit cost beyond the existing calls.
 		const response = await axios.get<TraktMediaItem[]>(`${TRAKT_API_URL}/${endpoint}`, {
 			headers,
+			params: { extended: 'full' },
 		});
 
 		return response.data;
