@@ -18,6 +18,7 @@ import {
 	handleAddMultipleHashesInTb,
 	handleAddMultipleTorrentFilesInRd,
 	handleAddMultipleTorrentFilesInTb,
+	handleAddMultipleWebDownloadsInTb,
 	handleReinsertTorrentinRd,
 	handleRestartTorrent,
 } from '@/utils/addMagnet';
@@ -28,9 +29,9 @@ import {
 	handleDeleteRdTorrent,
 	handleDeleteTbTorrent,
 } from '@/utils/deleteTorrent';
-import { extractHashes } from '@/utils/extractHashes';
+import { extractDownloadLinks, extractHashes } from '@/utils/extractHashes';
 import { getRdStatus } from '@/utils/fetchTorrents';
-import { generateHashList } from '@/utils/hashList';
+import { generateHashList, shareableTorrents } from '@/utils/hashList';
 import { filterLibraryItems, isRdBlockedFilename } from '@/utils/libraryFilters';
 import { handleSelectTorrent, resetSelection, selectShown } from '@/utils/librarySelection';
 import { handleChangeType } from '@/utils/libraryTypeManagement';
@@ -1122,7 +1123,18 @@ function TorrentsPage() {
 
 		toast('Creating local backup...', libraryToastOptions);
 		try {
-			const hashList = listToBackup.map((t) => ({
+			// Restore re-adds each entry as a magnet, which a web download's md5
+			// can never be. Its source link isn't recoverable from TorBox either,
+			// so there is nothing to back up.
+			const backupable = shareableTorrents(listToBackup);
+			const skipped = listToBackup.length - backupable.length;
+			if (skipped > 0) {
+				toast(
+					`Skipping ${skipped} web download${skipped === 1 ? '' : 's'} — they cannot be restored from a hash.`,
+					libraryToastOptions
+				);
+			}
+			const hashList = backupable.map((t) => ({
 				filename: t.filename,
 				hash: t.hash,
 			}));
@@ -1569,6 +1581,9 @@ function TorrentsPage() {
 	}
 
 	async function handleAddMagnet(debridService: string) {
+		// TorBox can also fetch plain download links, which is the only route
+		// into the library for media that was never released as a torrent.
+		const supportsWebDownloads = debridService === 'tb';
 		const { value: input, dismiss } = await Modal.fire({
 			title: `Add to your ${debridService.toUpperCase()} library`,
 			html: `
@@ -1596,6 +1611,18 @@ function TorrentsPage() {
 							"
 						/>
 					</div>
+					${
+						supportsWebDownloads
+							? `<div class="mt-4">
+						<label class="block text-sm text-gray-300 mb-2">Or paste direct download link(s) — TorBox will fetch them as web downloads</label>
+						<textarea
+							id="webDownloadInput"
+							class="w-full h-24 bg-gray-800 text-gray-100 border border-gray-700 rounded p-2 placeholder-gray-500 focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+							placeholder="https://example.com/movie.mkv"
+						></textarea>
+					</div>`
+							: ''
+					}
 				</div>
 			`,
 			background: '#111827',
@@ -1612,9 +1639,13 @@ function TorrentsPage() {
 					.value;
 				const fileInput = document.getElementById('torrentFile') as HTMLInputElement;
 				const files = fileInput.files;
+				const webDownloadInput = (
+					document.getElementById('webDownloadInput') as HTMLTextAreaElement | null
+				)?.value;
 
 				let hashes: string[] = [];
 				let torrentFiles: File[] = [];
+				let webDownloadLinks: string[] = [];
 
 				// Process magnet links
 				if (magnetInput) {
@@ -1626,20 +1657,43 @@ function TorrentsPage() {
 					torrentFiles = Array.from(files);
 				}
 
-				if (hashes.length === 0 && torrentFiles.length === 0) {
+				if (webDownloadInput) {
+					webDownloadLinks = extractDownloadLinks(webDownloadInput);
+					if (webDownloadInput.trim() && webDownloadLinks.length === 0) {
+						// Modal.showValidationMessage only logs in this modal
+						// implementation, so say it where the user can see it
+						toast.error(
+							'Direct download links must start with http:// or https://',
+							magnetToastOptions
+						);
+						return false;
+					}
+				}
+
+				if (
+					hashes.length === 0 &&
+					torrentFiles.length === 0 &&
+					webDownloadLinks.length === 0
+				) {
 					Modal.showValidationMessage(
-						'Please provide either magnet links or torrent files'
+						supportsWebDownloads
+							? 'Please provide magnet links, torrent files, or direct download links'
+							: 'Please provide either magnet links or torrent files'
 					);
 					return false;
 				}
 
-				return { hashes, torrentFiles };
+				return { hashes, torrentFiles, webDownloadLinks };
 			},
 		});
 
 		if (dismiss === Modal.DismissReason.cancel || !input) return;
 
-		const { hashes, torrentFiles } = input as { hashes: string[]; torrentFiles: File[] };
+		const { hashes, torrentFiles, webDownloadLinks } = input as {
+			hashes: string[];
+			torrentFiles: File[];
+			webDownloadLinks: string[];
+		};
 
 		if (rdKey && debridService === 'rd') {
 			// Handle torrent files first (direct upload)
@@ -1676,7 +1730,7 @@ function TorrentsPage() {
 			}
 		}
 		if (tbKey && debridService === 'tb') {
-			// TorBox accepts both torrent files and magnets
+			// TorBox accepts torrent files, magnets, and direct download links
 			if (torrentFiles.length > 0) {
 				handleAddMultipleTorrentFilesInTb(
 					tbKey,
@@ -1686,6 +1740,13 @@ function TorrentsPage() {
 			}
 			if (hashes.length > 0) {
 				handleAddMultipleHashesInTb(tbKey, hashes, async () => await refreshLibrary());
+			}
+			if (webDownloadLinks.length > 0) {
+				handleAddMultipleWebDownloadsInTb(
+					tbKey,
+					webDownloadLinks,
+					async () => await refreshLibrary()
+				);
 			}
 		}
 	}
