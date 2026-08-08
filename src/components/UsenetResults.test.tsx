@@ -1,3 +1,4 @@
+import { UsenetResult } from '@/services/nzb2rd';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,14 +14,14 @@ vi.mock('react-hot-toast', () => ({
 	},
 }));
 
-const RESULTS = [
+const RESULTS: UsenetResult[] = [
 	{ id: 'a', title: 'Bravo.Release.1080p', size: 3 * 1024 ** 3 },
 	{ id: 'b', title: 'Alpha.Release.2160p', size: 9 * 1024 ** 3 },
 ];
 
 // The section makes two calls on open: the search, then a best-effort lookup of
 // which releases already have a transfer.
-function mockSearch(results = RESULTS, transfers: unknown[] = []) {
+function mockSearch(results: UsenetResult[] = RESULTS, transfers: unknown[] = []) {
 	const fetchMock = vi.fn().mockImplementation((url: string) =>
 		Promise.resolve({
 			ok: true,
@@ -305,7 +306,7 @@ describe('UsenetResults', () => {
 		});
 	});
 
-	it('does not track a duplicate, and flips the row to its shared state', async () => {
+	it('reports an already-finished release as added to your own library', async () => {
 		const fetchMock = mockSearch();
 		render(<UsenetResults imdbId="tt1418646" rdKey="rd-key" />);
 		await userEvent.click(screen.getByRole('button', { name: /usenet/i }));
@@ -313,13 +314,73 @@ describe('UsenetResults', () => {
 
 		fetchMock.mockResolvedValueOnce({
 			ok: true,
-			json: async () => ({ duplicate: 'completed', infoHash: 'h', jobId: 'j' }),
+			json: async () => ({ duplicate: 'completed', infoHash: 'h', jobId: 'j', added: true }),
 		});
 		await userEvent.click(screen.getAllByRole('button', { name: /^send$/i })[0]);
 
 		expect(await screen.findByRole('button', { name: /in rd/i })).toBeDisabled();
+		await waitFor(() =>
+			expect(toastSuccess).toHaveBeenCalledWith(
+				expect.stringContaining('added to your Real-Debrid library'),
+				expect.anything()
+			)
+		);
+		// nothing to follow: it is already done
 		expect(localStorage.getItem('nzb2rd:jobs')).toBeNull();
-		expect(toastSuccess).not.toHaveBeenCalled();
+	});
+
+	// Otherwise this browser has no way to learn the job finished, and the
+	// completion path is what puts the content in *this* user's account.
+	it("follows someone else's in-flight job so the result reaches this account", async () => {
+		const fetchMock = mockSearch();
+		render(<UsenetResults imdbId="tt1418646" rdKey="rd-key" />);
+		await userEvent.click(screen.getByRole('button', { name: /usenet/i }));
+		await waitFor(() => expect(screen.getByRole('table')).toBeInTheDocument());
+
+		fetchMock.mockResolvedValueOnce({
+			ok: true,
+			json: async () => ({
+				duplicate: 'in_progress',
+				infoHash: null,
+				jobId: 'job-A',
+				queued: true,
+			}),
+		});
+		await userEvent.click(screen.getAllByRole('button', { name: /^send$/i })[0]);
+
+		expect(await screen.findByRole('button', { name: /running/i })).toBeDisabled();
+		const tracked = JSON.parse(localStorage.getItem('nzb2rd:jobs') ?? '[]');
+		expect(tracked).toHaveLength(1);
+		expect(tracked[0]).toMatchObject({ id: 'job-A', releaseId: 'b' });
+	});
+
+	it('asks for packs by name on a show, and labels the ones it finds', async () => {
+		const fetchMock = mockSearch([
+			{ id: 'p', title: 'Show.S02.COMPLETE.1080p', size: 40 * 1024 ** 3, isPack: true },
+			{ id: 'e', title: 'Show.S02E01.1080p', size: 3 * 1024 ** 3 },
+		]);
+		render(<UsenetResults imdbId="tt0944947" seasonNum={2} title="Show" rdKey="rd-key" />);
+
+		await userEvent.click(screen.getByRole('button', { name: /usenet/i }));
+		await waitFor(() => expect(screen.getByRole('table')).toBeInTheDocument());
+
+		expect(searchCalls(fetchMock)[0][0]).toBe(
+			'/api/nzb2rd/search?imdbId=tt0944947&seasonNum=2&title=Show'
+		);
+		expect(screen.getByText('Season pack')).toBeInTheDocument();
+		// only the pack row is labelled
+		expect(screen.getAllByText('Season pack')).toHaveLength(1);
+	});
+
+	it('does not ask for packs on a movie, which has no seasons', async () => {
+		const fetchMock = mockSearch();
+		render(<UsenetResults imdbId="tt1418646" title="Some Movie" rdKey="rd-key" />);
+
+		await userEvent.click(screen.getByRole('button', { name: /usenet/i }));
+		await waitFor(() => expect(screen.getByRole('table')).toBeInTheDocument());
+
+		expect(searchCalls(fetchMock)[0][0]).toBe('/api/nzb2rd/search?imdbId=tt1418646');
+		expect(screen.queryByText('Season pack')).not.toBeInTheDocument();
 	});
 
 	it('says so when the indexer has nothing', async () => {

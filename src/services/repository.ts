@@ -11,6 +11,7 @@ import {
 	HistoryAggregationService,
 	ImdbSearchService,
 	Nzb2rdMapService,
+	NzbSearchCacheService,
 	RdOperationalService,
 	ReportService,
 	ScrapedService,
@@ -46,6 +47,7 @@ export type RepositoryDependencies = Partial<{
 	imdbSearchService: ImdbSearchService;
 	debridUploaderMapService: DebridUploaderMapService;
 	nzb2rdMapService: Nzb2rdMapService;
+	nzbSearchCacheService: NzbSearchCacheService;
 }>;
 
 export class Repository {
@@ -68,6 +70,7 @@ export class Repository {
 	private imdbSearchService: ImdbSearchService;
 	private debridUploaderMapService: DebridUploaderMapService;
 	private nzb2rdMapService: Nzb2rdMapService;
+	private nzbSearchCacheService: NzbSearchCacheService;
 
 	constructor({
 		availabilityService,
@@ -89,6 +92,7 @@ export class Repository {
 		imdbSearchService,
 		debridUploaderMapService,
 		nzb2rdMapService,
+		nzbSearchCacheService,
 	}: RepositoryDependencies = {}) {
 		this.availabilityService = availabilityService ?? new AvailabilityService();
 		this.scrapedService = scrapedService ?? new ScrapedService();
@@ -110,6 +114,7 @@ export class Repository {
 		this.imdbSearchService = imdbSearchService ?? new ImdbSearchService();
 		this.debridUploaderMapService = debridUploaderMapService ?? new DebridUploaderMapService();
 		this.nzb2rdMapService = nzb2rdMapService ?? new Nzb2rdMapService();
+		this.nzbSearchCacheService = nzbSearchCacheService ?? new NzbSearchCacheService();
 	}
 
 	// Ensure connection is properly closed when repository is no longer needed
@@ -134,6 +139,7 @@ export class Repository {
 			this.imdbSearchService.disconnect(),
 			this.debridUploaderMapService.disconnect(),
 			this.nzb2rdMapService.disconnect(),
+			this.nzbSearchCacheService.disconnect(),
 		]);
 	}
 
@@ -206,6 +212,32 @@ export class Repository {
 
 	public removeNzb2rdTransfer(releaseId: string) {
 		return this.nzb2rdMapService.removeTransfer(releaseId);
+	}
+
+	// Users parked on someone else's in-flight job, to be given the content when it lands
+	public addNzb2rdWaiter(releaseId: string, rdKey: string, imdbId: string) {
+		return this.nzb2rdMapService.addWaiter(releaseId, rdKey, imdbId);
+	}
+
+	public takeNzb2rdWaiters(releaseId: string) {
+		return this.nzb2rdMapService.takeWaiters(releaseId);
+	}
+
+	public getNzb2rdWaiters(releaseId: string) {
+		return this.nzb2rdMapService.getWaiters(releaseId);
+	}
+
+	// Newznab search cache, so one indexer call serves a title for a whole TTL
+	public getCachedNzbSearch(imdbId: string, seasonNum?: number) {
+		return this.nzbSearchCacheService.get(imdbId, seasonNum);
+	}
+
+	public setCachedNzbSearch(
+		imdbId: string,
+		seasonNum: number | undefined,
+		results: Parameters<NzbSearchCacheService['set']>[2]
+	) {
+		return this.nzbSearchCacheService.set(imdbId, seasonNum, results);
 	}
 
 	// Availability Service Methods
@@ -542,6 +574,22 @@ export class Repository {
 		return this.allDebridCastService.saveCastProfile(
 			userId,
 			apiKey,
+			movieMaxSize,
+			episodeMaxSize,
+			otherStreamsLimit,
+			hideCastOption
+		);
+	}
+
+	public updateAllDebridCastSettings(
+		userId: string,
+		movieMaxSize?: number,
+		episodeMaxSize?: number,
+		otherStreamsLimit?: number,
+		hideCastOption?: boolean
+	) {
+		return this.allDebridCastService.updateCastSettings(
+			userId,
 			movieMaxSize,
 			episodeMaxSize,
 			otherStreamsLimit,
