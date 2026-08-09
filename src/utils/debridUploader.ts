@@ -1,4 +1,5 @@
 import { toast } from 'react-hot-toast';
+import { phaseLabelOf, QueuePlace } from './transferPhase';
 
 export type DebridUploaderJobStatus =
 	| 'pending'
@@ -16,6 +17,8 @@ export interface DebridUploaderJob {
 	rd_torrent_id?: string | null;
 	info_hash?: string | null;
 	name?: string | null;
+	/** Place in line, sent only while the job is still waiting to start. */
+	queue?: QueuePlace | null;
 }
 
 async function parseJsonResponse(response: Response): Promise<any> {
@@ -168,9 +171,10 @@ export async function runDebridTransferToRd(params: {
 				return 'started';
 			}
 
-			toast.loading(`Send to RD: ${polled.status_message || polled.status}`, {
-				id: toastId,
-			});
+			toast.loading(
+				`Send to RD: ${polled.status_message || phaseLabelOf('debrid', polled.status)}`,
+				{ id: toastId }
+			);
 		}
 
 		toast.error('Send to RD: still not handed to RD after 30 min — check the Transfers page.', {
