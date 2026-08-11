@@ -11,11 +11,14 @@ import {
 import { removeAvailability, submitAvailability, submitAvailabilityAd } from '@/utils/availability';
 import {
 	createDebridUploaderJob,
+	findJoinableTransfer,
 	getDebridUploaderJob,
-	getTrackedDebridUploaderJobs,
 	isDuplicateResponse,
+	needsRdHandoff,
+	settleCompletedTransfer,
 	trackDebridUploaderJob,
 	transferContextFromPath,
+	updateTrackedDebridUploaderJob,
 } from '@/utils/debridUploader';
 import {
 	handleDeleteAdTorrent,
@@ -361,28 +364,6 @@ export function useTorrentManagement(
 
 			const transferContext = transferContextFromPath(window.location.pathname);
 
-			// One job per hash: resubmitting burns a source slot and a full
-			// pipeline run for content a previous job already delivered (or is
-			// still delivering). Only a failed or vanished job may be retried.
-			const previous = getTrackedDebridUploaderJobs().find((j) => j.hash === hash);
-			if (previous) {
-				let previousStatus: string | undefined;
-				try {
-					previousStatus = (await getDebridUploaderJob(previous.id, transferContext))
-						.status;
-				} catch {
-					// job unknown to the service (e.g. wiped server-side) — allow a resubmit
-				}
-				if (previousStatus && previousStatus !== 'failed') {
-					toast(
-						previousStatus === 'completed'
-							? `${label}: already transferred — check your RD library.`
-							: `${label}: transfer already in progress — see the Transfers page.`
-					);
-					return;
-				}
-			}
-
 			// Size (in bytes) lets the server keep big torrents off weak hosts. The
 			// biggest single file is the "remux" signal; sizes on the row are in MB.
 			const row = searchResults.find((r) => r.hash === hash);
@@ -393,51 +374,109 @@ export function useTorrentManagement(
 				duration: 30000,
 			});
 			try {
-				const job = await createDebridUploaderJob({
-					hash,
-					imdbId,
-					rdKey,
-					tbKey: service === 'tb' ? (torboxKey ?? undefined) : undefined,
-					adKey: service === 'ad' ? (adKey ?? undefined) : undefined,
-					sizeBytes,
-				});
+				let jobId: string;
+				// Whether the finished torrent still has to be put into this user's RD.
+				let rdHandoff: boolean;
 
-				// Cross-user dedup: another user already transferred this content, so
-				// no job was created. Mark the row so the button hides, and point at
-				// the RD-cached result they should redeem instead.
-				if (isDuplicateResponse(job)) {
-					trackDebridUploaderJob({
-						id: job.jobId,
-						hash,
-						imdbId,
-						title: row?.title,
-						returnPath: window.location.pathname,
-						createdAt: Date.now(),
-					});
+				// One transfer per magnet — and the magnet is the whole of it, so
+				// TB → RD and AD → RD join the same transfer rather than running two
+				// pipelines for identical content. An existing transfer is joined,
+				// never resubmitted: only a failed or vanished job is retried.
+				const joinable = await findJoinableTransfer(hash, transferContext);
+				if (joinable) {
+					jobId = joinable.tracked.id;
+					rdHandoff = needsRdHandoff(joinable.tracked);
 					setSearchResults((prev) =>
 						prev.map((r) => (r.hash === hash ? { ...r, tbTransferred: true } : r))
 					);
-					toast(
-						job.duplicate === 'completed'
-							? `${label}: already in RD — use the Instant RD result for this title.`
-							: `${label}: a transfer for this is already in progress — see the Transfers page.`,
-						{ id: toastId }
-					);
-					return;
-				}
 
-				trackDebridUploaderJob({
-					id: job.id,
-					hash,
-					imdbId,
-					title: row?.title,
-					returnPath: window.location.pathname,
-					createdAt: Date.now(),
-				});
-				toast.loading(`${label}: transfer started — track it on the Transfers page.`, {
-					id: toastId,
-					duration: 30000,
-				});
+					if (joinable.job.status === 'completed') {
+						await settleCompletedTransfer({
+							rdKey,
+							jobId,
+							infoHash: joinable.job.info_hash,
+							needsHandoff: rdHandoff,
+							label,
+							toastId,
+						});
+						return;
+					}
+					toast.loading(
+						`${label}: transfer already in progress — waiting for completion...`,
+						{ id: toastId, duration: 30000 }
+					);
+				} else {
+					const job = await createDebridUploaderJob({
+						hash,
+						imdbId,
+						rdKey,
+						tbKey: torboxKey ?? undefined,
+						adKey: adKey ?? undefined,
+						sizeBytes,
+					});
+
+					if (isDuplicateResponse(job)) {
+						jobId = job.jobId;
+						rdHandoff = true;
+
+						trackDebridUploaderJob({
+							id: job.jobId,
+							hash,
+							imdbId,
+							title: row?.title,
+							returnPath: window.location.pathname,
+							createdAt: Date.now(),
+							adopted: true,
+						});
+						setSearchResults((prev) =>
+							prev.map((r) => (r.hash === hash ? { ...r, tbTransferred: true } : r))
+						);
+
+						if (job.duplicate === 'completed') {
+							// The server adds a finished duplicate to the caller's RD
+							// itself; retry from here when that leg failed.
+							if (job.addedToRd) {
+								updateTrackedDebridUploaderJob(job.jobId, { rdAdded: true });
+							}
+							await settleCompletedTransfer({
+								rdKey,
+								jobId,
+								infoHash: job.rewrittenHash,
+								needsHandoff: !job.addedToRd,
+								label,
+								toastId,
+							});
+							return;
+						}
+
+						// in_progress: fall through to poll and add to RD on completion
+						toast.loading(
+							`${label}: transfer in progress — waiting for completion...`,
+							{
+								id: toastId,
+								duration: 30000,
+							}
+						);
+					} else {
+						jobId = job.id;
+						// Created with this user's RD key, so the service hands it over.
+						rdHandoff = false;
+
+						trackDebridUploaderJob({
+							id: job.id,
+							hash,
+							imdbId,
+							title: row?.title,
+							returnPath: window.location.pathname,
+							createdAt: Date.now(),
+							adopted: false,
+						});
+						toast.loading(
+							`${label}: transfer started — track it on the Transfers page.`,
+							{ id: toastId, duration: 30000 }
+						);
+					}
+				}
 
 				const POLL_MS = 5000;
 				const MAX_POLLS = 360; // 30 min for the source half; RD's pull isn't waited on
@@ -446,18 +485,20 @@ export function useTorrentManagement(
 
 					let polled;
 					try {
-						polled = await getDebridUploaderJob(job.id, transferContext);
+						polled = await getDebridUploaderJob(jobId, transferContext);
 					} catch {
 						continue; // transient poll failure; the job keeps running server-side
 					}
 
 					if (polled.status === 'completed') {
-						toast.success(
-							`${label}: done! The torrent is in your Real-Debrid library.`,
-							{
-								id: toastId,
-							}
-						);
+						await settleCompletedTransfer({
+							rdKey,
+							jobId,
+							infoHash: polled.info_hash,
+							needsHandoff: rdHandoff,
+							label,
+							toastId,
+						});
 						return;
 					}
 
@@ -468,9 +509,15 @@ export function useTorrentManagement(
 						return;
 					}
 
-					// RD is downloading from the webseed — the hand-off succeeded and
-					// the rest happens server-side, so release the button.
 					if (polled.status === 'uploading') {
+						if (rdHandoff) {
+							// Keep polling — we need the completed status to get info_hash
+							toast.loading(
+								`${label}: Real-Debrid download underway — waiting for completion...`,
+								{ id: toastId, duration: 30000 }
+							);
+							continue;
+						}
 						toast.success(
 							`${label}: Real-Debrid download underway — follow it on the Transfers page.`,
 							{ id: toastId }
