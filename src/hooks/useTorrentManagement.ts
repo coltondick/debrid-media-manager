@@ -134,7 +134,9 @@ export function useTorrentManagement(
 
 					await fetchHashAndProgress(hash);
 				},
-				deleteIfNotInstant
+				deleteIfNotInstant,
+				0,
+				isCheckingAvailability
 			);
 
 			// Clean up false positives: when the torrent wasn't instant (deleteIfNotInstant)
@@ -299,7 +301,8 @@ export function useTorrentManagement(
 					}
 				},
 				isCheckingAvailability, // deleteIfNotInstant parameter
-				!isCheckingAvailability // keepInLibrary parameter - keep if not checking service
+				!isCheckingAvailability, // keepInLibrary parameter - keep if not checking service
+				isCheckingAvailability // silent parameter - suppress toasts during checks
 			);
 
 			console.log('[TorrentManagement] addAd end', { hash });
@@ -386,7 +389,9 @@ export function useTorrentManagement(
 			const sizeMb = row?.biggestFileSize || row?.fileSize || 0;
 			const sizeBytes = sizeMb > 0 ? Math.round(sizeMb * 1024 * 1024) : undefined;
 
-			const toastId = toast.loading(`${label}: submitting transfer...`);
+			const toastId = toast.loading(`${label}: submitting transfer...`, {
+				duration: 30000,
+			});
 			try {
 				const job = await createDebridUploaderJob({
 					hash,
@@ -401,13 +406,21 @@ export function useTorrentManagement(
 				// no job was created. Mark the row so the button hides, and point at
 				// the RD-cached result they should redeem instead.
 				if (isDuplicateResponse(job)) {
+					trackDebridUploaderJob({
+						id: job.jobId,
+						hash,
+						imdbId,
+						title: row?.title,
+						returnPath: window.location.pathname,
+						createdAt: Date.now(),
+					});
 					setSearchResults((prev) =>
 						prev.map((r) => (r.hash === hash ? { ...r, tbTransferred: true } : r))
 					);
 					toast(
 						job.duplicate === 'completed'
 							? `${label}: already in RD — use the Instant RD result for this title.`
-							: `${label}: a transfer for this is already in progress.`,
+							: `${label}: a transfer for this is already in progress — see the Transfers page.`,
 						{ id: toastId }
 					);
 					return;
@@ -423,6 +436,7 @@ export function useTorrentManagement(
 				});
 				toast.loading(`${label}: transfer started — track it on the Transfers page.`, {
 					id: toastId,
+					duration: 30000,
 				});
 
 				const POLL_MS = 5000;
@@ -466,7 +480,7 @@ export function useTorrentManagement(
 
 					toast.loading(
 						`${label}: ${polled.status_message || phaseLabelOf('debrid', polled.status)}`,
-						{ id: toastId }
+						{ id: toastId, duration: 30000 }
 					);
 				}
 

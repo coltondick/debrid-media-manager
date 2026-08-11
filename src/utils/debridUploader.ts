@@ -118,15 +118,23 @@ export async function runDebridTransferToRd(params: {
 		}
 	}
 
-	const toastId = toast.loading('Send to RD: submitting transfer...');
+	const toastId = toast.loading('Send to RD: submitting transfer...', { duration: 30000 });
 	try {
 		const job = await createDebridUploaderJob({ hash, imdbId, rdKey, tbKey, adKey, sizeBytes });
 
 		if (isDuplicateResponse(job)) {
+			trackDebridUploaderJob({
+				id: job.jobId,
+				hash,
+				imdbId,
+				title,
+				returnPath,
+				createdAt: Date.now(),
+			});
 			toast(
 				job.duplicate === 'completed'
 					? 'Send to RD: already in RD — use the Instant RD result for this title.'
-					: 'Send to RD: a transfer for this is already in progress.',
+					: 'Send to RD: a transfer for this is already in progress — see the Transfers page.',
 				{ id: toastId }
 			);
 			return 'duplicate';
@@ -142,6 +150,7 @@ export async function runDebridTransferToRd(params: {
 		});
 		toast.loading('Send to RD: transfer started — track it on the Transfers page.', {
 			id: toastId,
+			duration: 30000,
 		});
 
 		const POLL_MS = 5000;
@@ -178,7 +187,7 @@ export async function runDebridTransferToRd(params: {
 
 			toast.loading(
 				`Send to RD: ${polled.status_message || phaseLabelOf('debrid', polled.status)}`,
-				{ id: toastId }
+				{ id: toastId, duration: 30000 }
 			);
 		}
 

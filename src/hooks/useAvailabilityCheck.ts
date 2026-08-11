@@ -137,20 +137,33 @@ export function useAvailabilityCheck(
 			const alreadyAvailableServices = services.filter((service) =>
 				isServiceAvailable(service, result)
 			);
+			const alreadyCheckingServices = services.filter(
+				(service) =>
+					!isServiceAvailable(service, result) &&
+					checkingSet.has(checkingKey(result.hash, service))
+			);
 			const servicesNeedingCheck = services.filter(
-				(service) => !alreadyAvailableServices.includes(service)
+				(service) =>
+					!isServiceAvailable(service, result) &&
+					!checkingSet.has(checkingKey(result.hash, service))
 			);
 
 			if (servicesNeedingCheck.length === 0) {
-				const cachedLabel = formatServicesLabel(alreadyAvailableServices);
-				toast.success(`Already cached in ${cachedLabel}.`);
+				if (alreadyAvailableServices.length > 0) {
+					toast.success(
+						`Already cached in ${formatServicesLabel(alreadyAvailableServices)}.`
+					);
+				} else if (alreadyCheckingServices.length > 0) {
+					toast('Check already in progress for this torrent.');
+				}
 				return;
 			}
 
 			addChecking(result.hash, servicesNeedingCheck);
 
 			const toastId = toast.loading(
-				`Checking availability (${formatServicesLabel(servicesNeedingCheck)})...`
+				`Checking availability (${formatServicesLabel(servicesNeedingCheck)})...`,
+				{ duration: 30000 }
 			);
 
 			try {
@@ -161,16 +174,12 @@ export function useAvailabilityCheck(
 						rdKey && servicesNeedingCheck.includes('RD')
 							? (async () => {
 									let addRdResponse: any;
-									// Check if torrent is in progress
 									if (`rd:${result.hash}` in hashAndProgress) {
 										await deleteRd(result.hash);
-										addRdResponse = await addRd(result.hash, true);
-									} else {
-										addRdResponse = await addRd(result.hash, true);
-										await deleteRd(result.hash);
 									}
+									addRdResponse = await addRd(result.hash, true);
+									await deleteRd(result.hash);
 
-									// Check if addRd found it cached (returns response with ID)
 									const isCachedInRD =
 										addRdResponse &&
 										addRdResponse.id &&
@@ -188,14 +197,11 @@ export function useAvailabilityCheck(
 						adKey && servicesNeedingCheck.includes('AD')
 							? (async () => {
 									let addAdResponse: any;
-									// Check if torrent is in progress
 									if (`ad:${result.hash}` in hashAndProgress) {
 										await deleteAd(result.hash);
-										addAdResponse = await addAd(result.hash, true);
-									} else {
-										addAdResponse = await addAd(result.hash, true);
-										await deleteAd(result.hash);
 									}
+									addAdResponse = await addAd(result.hash, true);
+									await deleteAd(result.hash);
 
 									// Check if addAd found it cached
 									const isCachedInAD =
@@ -255,6 +261,18 @@ export function useAvailabilityCheck(
 				let isCachedInRD = Boolean(result.rdAvailable);
 				if (rdCheckResult.status === 'fulfilled') {
 					isCachedInRD = rdCheckResult.value.isCachedInRD;
+					if (!isCachedInRD && result.tbTransferred) {
+						fetch('/api/debrid-uploader/unregister', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ hash: result.hash }),
+						}).catch(() => {});
+						setSearchResults((prev) =>
+							prev.map((r) =>
+								r.hash === result.hash ? { ...r, tbTransferred: false } : r
+							)
+						);
+					}
 				} else if (rdKey && servicesNeedingCheck.includes('RD')) {
 					console.error('RD availability check failed:', rdCheckResult.reason);
 				}
@@ -391,6 +409,7 @@ export function useAvailabilityCheck(
 			isServiceAvailable,
 			addChecking,
 			removeChecking,
+			checkingSet,
 		]
 	);
 
@@ -437,7 +456,8 @@ export function useAvailabilityCheck(
 
 			const servicesLabel = formatServicesLabel(services);
 			let progressToast: string | null = toast.loading(
-				`Starting ${servicesLabel} check for ${torrentsToCheck.length} torrents...`
+				`Starting ${servicesLabel} check for ${torrentsToCheck.length} torrents...`,
+				{ duration: 30000 }
 			);
 
 			const rdTargets = services.includes('RD')
@@ -486,7 +506,7 @@ export function useAvailabilityCheck(
 				}
 
 				if (progressToast && isMounted.current && parts.length > 0) {
-					toast.loading(parts.join(' | '), { id: progressToast });
+					toast.loading(parts.join(' | '), { id: progressToast, duration: 30000 });
 				}
 			};
 
@@ -502,13 +522,10 @@ export function useAvailabilityCheck(
 											let addRdResponse: any;
 											if (`rd:${result.hash}` in hashAndProgress) {
 												await deleteRd(result.hash);
-												addRdResponse = await addRd(result.hash, true);
-											} else {
-												addRdResponse = await addRd(result.hash, true);
-												await deleteRd(result.hash);
 											}
+											addRdResponse = await addRd(result.hash, true);
+											await deleteRd(result.hash);
 
-											// Check if addRd returned a response with an ID AND is truly available
 											const isCachedInRD =
 												addRdResponse &&
 												addRdResponse.id &&
@@ -547,11 +564,9 @@ export function useAvailabilityCheck(
 											let addAdResponse: any;
 											if (`ad:${result.hash}` in hashAndProgress) {
 												await deleteAd(result.hash);
-												addAdResponse = await addAd(result.hash, true);
-											} else {
-												addAdResponse = await addAd(result.hash, true);
-												await deleteAd(result.hash);
 											}
+											addAdResponse = await addAd(result.hash, true);
+											await deleteAd(result.hash);
 
 											// Check if addAd returned a response and is cached
 											const isCachedInAD =
@@ -757,6 +772,26 @@ export function useAvailabilityCheck(
 
 					if (Object.keys(positiveAvailability).length > 0) {
 						markAvailableServices(setSearchResults, sortFunction, positiveAvailability);
+					}
+
+					// Clear stale transfer badges for hashes RD says are not cached
+					const staleTransferHashes = rdCheckResults
+						.filter((r) => r.success && !r.result?.isCachedInRD && r.item.tbTransferred)
+						.map((r) => r.item.hash);
+					if (staleTransferHashes.length > 0) {
+						const staleSet = new Set(staleTransferHashes);
+						setSearchResults((prev) =>
+							prev.map((r) =>
+								staleSet.has(r.hash) ? { ...r, tbTransferred: false } : r
+							)
+						);
+						for (const hash of staleTransferHashes) {
+							fetch('/api/debrid-uploader/unregister', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({ hash }),
+							}).catch(() => {});
+						}
 					}
 
 					// Update RD database cache
