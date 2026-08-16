@@ -21,6 +21,11 @@ import {
 import { useEffect, useState } from 'react';
 import ReportButton from './ReportButton';
 
+// A rule between two action groups. Only rendered when the groups on both
+// sides of it actually produced buttons, so a single-service user never sees
+// a stray line.
+const ActionSeparator = () => <hr data-action-separator="true" className="my-1 border-gray-600" />;
+
 type MovieSearchResultsProps = {
 	filteredResults: SearchResult[];
 	onlyShowCached: boolean;
@@ -484,23 +489,7 @@ const MovieSearchResults = ({
 										)}
 									</button>
 								)}
-								{watchService && player && (
-									<button
-										className={`haptic-sm inline rounded border-2 border-teal-500 bg-teal-900/30 px-1 text-xs text-teal-100 transition-colors hover:bg-teal-800/50 ${isWatching ? 'cursor-not-allowed opacity-50' : ''}`}
-										title={`Watch via ${WATCH_SERVICE_LABEL[watchService]}`}
-										onClick={() => handleWatch(r)}
-										disabled={isWatching}
-									>
-										<span className="inline-flex items-center">
-											{isWatching ? (
-												<Loader2 className="mr-1 h-3 w-3 animate-spin" />
-											) : (
-												<EyeIcon className="mr-1 h-3 w-3 text-teal-500" />
-											)}
-											Watch
-										</span>
-									</button>
-								)}
+								{rdKey && adKey && <ActionSeparator />}
 
 								{/* — AD — */}
 								{adKey && inLibrary('ad', r.hash) && (
@@ -597,6 +586,8 @@ const MovieSearchResults = ({
 									</button>
 								)}
 
+								{(rdKey || adKey) && torboxKey && <ActionSeparator />}
+
 								{/* — TB — */}
 								{torboxKey && inLibrary('tb', r.hash) && (
 									<button
@@ -670,6 +661,27 @@ const MovieSearchResults = ({
 												Cast (TB)
 											</span>
 										)}
+									</button>
+								)}
+
+								{/* — Separator: everything above belongs to one service, everything below does not — */}
+								{(rdKey || adKey || torboxKey) && <ActionSeparator />}
+
+								{watchService && player && (
+									<button
+										className={`haptic-sm inline rounded border-2 border-teal-500 bg-teal-900/30 px-1 text-xs text-teal-100 transition-colors hover:bg-teal-800/50 ${isWatching ? 'cursor-not-allowed opacity-50' : ''}`}
+										title={`Watch via ${WATCH_SERVICE_LABEL[watchService]}`}
+										onClick={() => handleWatch(r)}
+										disabled={isWatching}
+									>
+										<span className="inline-flex items-center">
+											{isWatching ? (
+												<Loader2 className="mr-1 h-3 w-3 animate-spin" />
+											) : (
+												<EyeIcon className="mr-1 h-3 w-3 text-teal-500" />
+											)}
+											Watch
+										</span>
 									</button>
 								)}
 

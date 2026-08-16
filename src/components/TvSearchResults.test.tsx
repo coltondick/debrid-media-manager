@@ -96,4 +96,150 @@ describe('TvSearchResults', () => {
 		await userEvent.click(screen.getByRole('button', { name: /Download/i }));
 		expect(downloadSpy).toHaveBeenCalledWith('tv-hash');
 	});
+
+	// The action row reads left to right as "what each service can do", then the
+	// things that are not tied to a service. Watch used to sit inside the RD
+	// group, which made it look like an RD action when it picks its own service.
+	describe('action row grouping', () => {
+		const everywhere = {
+			...baseTvResult,
+			rdAvailable: false,
+			adAvailable: true,
+			tbAvailable: true,
+		};
+
+		const labelsInOrder = (container: HTMLElement) =>
+			Array.from(container.querySelectorAll('button')).map((b) =>
+				(b.textContent || '').replace(/\s+/g, ' ').trim()
+			);
+
+		const indexOfLabel = (labels: string[], needle: string) =>
+			labels.findIndex((l) => l.includes(needle));
+
+		it('orders provider buttons RD then AD then TB, ahead of the shared actions', () => {
+			const { container } = renderTv({
+				rdKey: 'rd-key',
+				adKey: 'ad-key',
+				torboxKey: 'tb-key',
+				player: 'windows/vlc',
+				filteredResults: [everywhere],
+				sendAdToRd: vi.fn(),
+				sendTbToRd: vi.fn(),
+				handleCastAllDebrid: vi.fn(),
+				handleCastTorBox: vi.fn(),
+			});
+
+			const labels = labelsInOrder(container);
+			const rd = indexOfLabel(labels, 'Check RD');
+			const ad = indexOfLabel(labels, 'Instant AD');
+			const adToRd = indexOfLabel(labels, 'AD \u2192 RD');
+			const tb = indexOfLabel(labels, 'Instant TB');
+			const tbToRd = indexOfLabel(labels, 'TB \u2192 RD');
+			const watch = indexOfLabel(labels, 'Watch');
+			const copy = indexOfLabel(labels, 'Copy');
+
+			expect([rd, ad, adToRd, tb, tbToRd, watch, copy].every((i) => i >= 0)).toBe(true);
+			// RD group, then AD group, then TB group
+			expect(rd).toBeLessThan(ad);
+			expect(adToRd).toBeLessThan(tb);
+			expect(tb).toBeLessThan(watch);
+			expect(tbToRd).toBeLessThan(watch);
+			// then the service-agnostic tail
+			expect(watch).toBeLessThan(copy);
+		});
+
+		it('draws a separator between the provider group and the shared actions', () => {
+			const { container } = renderTv({
+				rdKey: 'rd-key',
+				adKey: 'ad-key',
+				torboxKey: 'tb-key',
+				player: 'windows/vlc',
+				filteredResults: [everywhere],
+				sendAdToRd: vi.fn(),
+				sendTbToRd: vi.fn(),
+				handleCastAllDebrid: vi.fn(),
+				handleCastTorBox: vi.fn(),
+			});
+
+			expect(container.querySelector('[data-action-separator]')).not.toBeNull();
+		});
+
+		// A rule only earns its place between two groups that both rendered
+		// something - otherwise a user with one service gets a stray line.
+		it('rules off each service group when the neighbouring group exists', () => {
+			const { container } = renderTv({
+				rdKey: 'rd-key',
+				adKey: 'ad-key',
+				torboxKey: 'tb-key',
+				player: 'windows/vlc',
+				filteredResults: [everywhere],
+				sendAdToRd: vi.fn(),
+				sendTbToRd: vi.fn(),
+				handleCastAllDebrid: vi.fn(),
+				handleCastTorBox: vi.fn(),
+			});
+
+			expect(container.querySelectorAll('[data-action-separator]')).toHaveLength(3);
+
+			const row = container.querySelector('[data-action-separator]')!.parentElement!;
+			const kinds = Array.from(row.children).map((e) =>
+				e.hasAttribute('data-action-separator')
+					? 'hr'
+					: (e.textContent || '').replace(/\s+/g, ' ').trim()
+			);
+			const ruleAt = kinds.reduce<number[]>(
+				(acc, k, i) => (k === 'hr' ? [...acc, i] : acc),
+				[]
+			);
+
+			// never leading, never trailing, never two in a row
+			expect(ruleAt[0]).toBeGreaterThan(0);
+			expect(ruleAt[ruleAt.length - 1]).toBeLessThan(kinds.length - 1);
+			expect(ruleAt.some((i) => kinds[i + 1] === 'hr')).toBe(false);
+
+			// each rule lands on a service boundary
+			expect(kinds[ruleAt[0] + 1]).toContain('AD');
+			expect(kinds[ruleAt[1] + 1]).toContain('TB');
+			expect(kinds[ruleAt[2] + 1]).toContain('Watch');
+		});
+
+		it('draws only the shared-actions rule when one service is logged in', () => {
+			const { container } = renderTv({
+				rdKey: 'rd-key',
+				adKey: null,
+				torboxKey: null,
+				player: 'windows/vlc',
+				filteredResults: [everywhere],
+			});
+
+			expect(container.querySelectorAll('[data-action-separator]')).toHaveLength(1);
+		});
+
+		it('skips the rule for a service that is not logged in', () => {
+			const { container } = renderTv({
+				rdKey: 'rd-key',
+				adKey: null,
+				torboxKey: 'tb-key',
+				player: 'windows/vlc',
+				filteredResults: [everywhere],
+				sendTbToRd: vi.fn(),
+				handleCastTorBox: vi.fn(),
+			});
+
+			// RD | TB | shared - no phantom rule where AllDebrid would have been
+			expect(container.querySelectorAll('[data-action-separator]')).toHaveLength(2);
+		});
+
+		it('leaves the separator out when no service button is shown', () => {
+			const { container } = renderTv({
+				rdKey: null,
+				adKey: null,
+				torboxKey: null,
+				player: 'windows/vlc',
+				filteredResults: [everywhere],
+			});
+
+			expect(container.querySelector('[data-action-separator]')).toBeNull();
+		});
+	});
 });
