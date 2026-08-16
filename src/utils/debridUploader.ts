@@ -1,6 +1,13 @@
 import { addHashAsMagnet, selectFiles } from '@/services/realDebrid';
 import { toast } from 'react-hot-toast';
-import { phaseLabelOf, QueuePlace } from './transferPhase';
+import {
+	phaseLabelOf,
+	QueuePlace,
+	toastRdUnderway,
+	TRANSFER_LABELS,
+	TRANSFER_STEP_TOAST_MS,
+	TRANSFER_TOAST_MS,
+} from './transferPhase';
 
 export type DebridUploaderJobStatus =
 	| 'pending'
@@ -157,25 +164,143 @@ export async function settleCompletedTransfer(params: {
 	toastId?: string;
 }): Promise<TransferOutcome> {
 	const { rdKey, jobId, infoHash, needsHandoff, label, toastId } = params;
+	const options = { id: toastId, duration: TRANSFER_TOAST_MS };
 
 	if (!needsHandoff) {
-		toast.success(`${label}: done! It is in your Real-Debrid library.`, { id: toastId });
+		toast.success(`${label}: done! It is in your Real-Debrid library.`, options);
 		return 'completed';
 	}
 	if (!infoHash) {
-		toast.error(`${label}: transfer finished but its torrent hash is missing — try again.`, {
-			id: toastId,
-		});
+		toast.error(
+			`${label}: transfer finished but its torrent hash is missing — try again.`,
+			options
+		);
 		return 'duplicate';
 	}
 	if (await addTransferToRd(rdKey, infoHash, jobId)) {
-		toast.success(`${label}: added to your Real-Debrid library!`, { id: toastId });
+		toast.success(`${label}: added to your Real-Debrid library!`, options);
 		return 'completed';
 	}
-	toast.error(`${label}: transfer finished but Real-Debrid rejected it — try again.`, {
-		id: toastId,
-	});
+	toast.error(`${label}: transfer finished but Real-Debrid rejected it — try again.`, options);
 	return 'duplicate';
+}
+
+const POLL_MS = 5000;
+const MAX_POLLS = 360; // 30 min for the source half; RD's pull isn't waited on
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export interface FollowTransferParams {
+	jobId: string;
+	rdKey: string;
+	/** Toast prefix naming the flow: `TB → RD`, `AD → RD`, `Send to RD`. */
+	label: string;
+	toastId?: string;
+	/** Whether the finished torrent still has to be put into this user's RD. */
+	rdHandoff: boolean;
+	context?: TransferContext;
+}
+
+/**
+ * Follows a running transfer to the point where it stops being the browser's
+ * business, and reports it on the caller's toast. Shared by every send flow so
+ * they cannot drift apart on either the wording or the point they let go.
+ *
+ * That point is `uploading` — RD pulling the bytes out of the webseed — which
+ * is the last thing this browser can tell the user anything new about. Waiting
+ * out RD's pull instead means a spinner held for minutes and, on a big release,
+ * a "still not handed to RD after 30 min" error for a transfer that was handed
+ * over fine.
+ *
+ * A joined transfer is the one case with unfinished business: it lands in the
+ * RD account that created the job, and only the *completed* job carries the
+ * rewritten hash needed to put it in this user's RD as well. That waits itself
+ * out in the background, detached from both the toast and the caller — so the
+ * row's button settles now and the content still arrives.
+ */
+export async function followTransferToRd(params: FollowTransferParams): Promise<TransferOutcome> {
+	const { jobId, rdKey, label, toastId, rdHandoff, context } = params;
+
+	for (let poll = 0; poll < MAX_POLLS; poll++) {
+		await wait(POLL_MS);
+
+		let polled;
+		try {
+			polled = await getDebridUploaderJob(jobId, context);
+		} catch {
+			continue; // transient poll failure; the job keeps running server-side
+		}
+
+		if (polled.status === 'completed') {
+			return await settleCompletedTransfer({
+				rdKey,
+				jobId,
+				infoHash: polled.info_hash,
+				needsHandoff: rdHandoff,
+				label,
+				toastId,
+			});
+		}
+		if (polled.status === 'failed') {
+			toast.error(`${label} failed: ${polled.error || 'unknown error'}`, {
+				id: toastId,
+				duration: TRANSFER_TOAST_MS,
+			});
+			return 'failed';
+		}
+		if (polled.status === 'uploading') {
+			toastRdUnderway(label, toastId);
+			if (rdHandoff) void handOffWhenComplete(params, poll + 1);
+			return 'started';
+		}
+
+		toast.loading(
+			`${label}: ${polled.status_message || phaseLabelOf('debrid', polled.status)}`,
+			{ id: toastId, duration: TRANSFER_STEP_TOAST_MS }
+		);
+	}
+
+	toast.error(`${label}: still not handed to RD after 30 min — check the Transfers page.`, {
+		id: toastId,
+		duration: TRANSFER_TOAST_MS,
+	});
+	return 'timeout';
+}
+
+/**
+ * The tail of a joined transfer, after its toast has already settled: poll on
+ * in silence and put the rewritten torrent in this user's RD once the job
+ * finishes. The Transfers page runs the same handoff for anyone who navigated
+ * away; `rdAdded` is what stops the two from both adding it.
+ */
+async function handOffWhenComplete(params: FollowTransferParams, from: number): Promise<void> {
+	const { jobId, rdKey, label, context } = params;
+
+	for (let poll = from; poll < MAX_POLLS; poll++) {
+		await wait(POLL_MS);
+
+		let polled;
+		try {
+			polled = await getDebridUploaderJob(jobId, context);
+		} catch {
+			continue;
+		}
+		if (polled.status === 'failed') return;
+		if (polled.status !== 'completed') continue;
+
+		const tracked = getTrackedDebridUploaderJobs().find((j) => j.id === jobId);
+		if (!needsRdHandoff(tracked)) return; // the Transfers page got there first
+		// No toast id: the transfer's own toast said its piece at `uploading`, so
+		// this arrives as its own note that the content has landed.
+		await settleCompletedTransfer({
+			rdKey,
+			jobId,
+			infoHash: polled.info_hash,
+			needsHandoff: true,
+			label,
+		});
+		return;
+	}
 }
 
 // Self-contained "send this to RD" flow (submit → dedup → track → poll → toast),
@@ -194,9 +319,11 @@ export async function runDebridTransferToRd(params: {
 	returnPath?: string;
 }): Promise<TransferOutcome> {
 	const { hash, imdbId, rdKey, tbKey, adKey, sizeBytes, title, returnPath } = params;
-	const label = 'Send to RD';
+	const label = TRANSFER_LABELS.send;
 
-	const toastId = toast.loading('Send to RD: submitting transfer...', { duration: 30000 });
+	const toastId = toast.loading(`${label}: submitting transfer...`, {
+		duration: TRANSFER_STEP_TOAST_MS,
+	});
 	try {
 		let jobId: string;
 		// Whether the finished torrent still has to be put into this user's RD.
@@ -222,9 +349,9 @@ export async function runDebridTransferToRd(params: {
 					toastId,
 				});
 			}
-			toast.loading('Send to RD: transfer already in progress — waiting for completion...', {
+			toast.loading(`${label}: transfer already in progress — waiting for completion...`, {
 				id: toastId,
-				duration: 30000,
+				duration: TRANSFER_STEP_TOAST_MS,
 			});
 		} else {
 			const job = await createDebridUploaderJob({
@@ -267,9 +394,9 @@ export async function runDebridTransferToRd(params: {
 				}
 
 				// in_progress: fall through to poll and add to RD on completion
-				toast.loading('Send to RD: transfer in progress — waiting for completion...', {
+				toast.loading(`${label}: transfer in progress — waiting for completion...`, {
 					id: toastId,
-					duration: 30000,
+					duration: TRANSFER_STEP_TOAST_MS,
 				});
 			} else {
 				jobId = job.id;
@@ -285,69 +412,18 @@ export async function runDebridTransferToRd(params: {
 					createdAt: Date.now(),
 					adopted: false,
 				});
-				toast.loading('Send to RD: transfer started — track it on the Transfers page.', {
+				toast.loading(`${label}: transfer started — track it on the Transfers page.`, {
 					id: toastId,
-					duration: 30000,
+					duration: TRANSFER_STEP_TOAST_MS,
 				});
 			}
 		}
 
-		const POLL_MS = 5000;
-		const MAX_POLLS = 360; // 30 min for the source half; RD's pull isn't waited on
-		for (let i = 0; i < MAX_POLLS; i++) {
-			await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-
-			let polled;
-			try {
-				polled = await getDebridUploaderJob(jobId);
-			} catch {
-				continue; // transient poll failure; the job keeps running server-side
-			}
-
-			if (polled.status === 'completed') {
-				return await settleCompletedTransfer({
-					rdKey,
-					jobId,
-					infoHash: polled.info_hash,
-					needsHandoff: rdHandoff,
-					label,
-					toastId,
-				});
-			}
-			if (polled.status === 'failed') {
-				toast.error(`Send to RD failed: ${polled.error || 'unknown error'}`, {
-					id: toastId,
-				});
-				return 'failed';
-			}
-			if (polled.status === 'uploading') {
-				if (rdHandoff) {
-					toast.loading(
-						'Send to RD: Real-Debrid download underway — waiting for completion...',
-						{ id: toastId, duration: 30000 }
-					);
-					continue;
-				}
-				toast.success(
-					'Send to RD: Real-Debrid download underway — follow it on the Transfers page.',
-					{ id: toastId }
-				);
-				return 'started';
-			}
-
-			toast.loading(
-				`Send to RD: ${polled.status_message || phaseLabelOf('debrid', polled.status)}`,
-				{ id: toastId, duration: 30000 }
-			);
-		}
-
-		toast.error('Send to RD: still not handed to RD after 30 min — check the Transfers page.', {
-			id: toastId,
-		});
-		return 'timeout';
+		return await followTransferToRd({ jobId, rdKey, label, toastId, rdHandoff });
 	} catch (error) {
-		toast.error(`Send to RD: ${error instanceof Error ? error.message : 'failed to submit'}`, {
+		toast.error(`${label}: ${error instanceof Error ? error.message : 'failed to submit'}`, {
 			id: toastId,
+			duration: TRANSFER_TOAST_MS,
 		});
 		return 'error';
 	}
