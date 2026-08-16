@@ -1,6 +1,7 @@
 import { Prisma, Scraped } from '@prisma/client';
 import {
 	ScrapeSearchResult,
+	decodeTitle,
 	flattenAndRemoveDuplicates,
 	isUsableHash,
 	sortByFileSize,
@@ -10,12 +11,61 @@ import { DatabaseClient } from './client';
 /**
  * The append branch below launders results through flattenAndRemoveDuplicates,
  * but the replace and create branches write what they are handed. Both save
- * paths sanitise up front so no branch can be the one that lets a hash in.
+ * paths sanitise up front so no branch can be the one that lets a bad hash or an
+ * entity-encoded title in.
  */
 const usableResults = (value: ScrapeSearchResult[]): ScrapeSearchResult[] =>
-	value.filter((r) => isUsableHash(r?.hash));
+	value
+		.filter((r) => isUsableHash(r?.hash))
+		.map((r) => {
+			const title = decodeTitle(r.title);
+			return title === r.title ? r : { ...r, title };
+		});
+
+/**
+ * A hash spread across more distinct titles than this is matcher failure, not a
+ * collection.
+ *
+ * The unit is titles, not page keys. TV keys carry a season (`tv:ttX:12`), so a
+ * complete-series pack legitimately appears on every season page of its show -
+ * counting page keys reported a 38-season run as 38-fold fan-out and a cleanup
+ * built on that would have emptied hundreds of populated season pages.
+ *
+ * Measured over the whole corpus on the collapsed unit: 99.1% of hashes touch 5
+ * titles or fewer and 99.7% touch 10 or fewer, while the worst reaches 14,503.
+ * 25 leaves ordinary packs, double features and long-running shows well clear.
+ */
+export const FAN_OUT_PAGE_LIMIT = 25;
 
 export class ScrapedService extends DatabaseClient {
+	/**
+	 * Drops results whose hash is already spread across more pages than any real
+	 * torrent could belong to. The counts come from HashPageCount, refreshed
+	 * periodically rather than maintained per write - a hash drifting past the
+	 * limit is caught on the next refresh, and a missing row simply means the
+	 * hash is new and allowed.
+	 */
+	private async withoutFannedOutHashes(
+		value: ScrapeSearchResult[]
+	): Promise<ScrapeSearchResult[]> {
+		if (value.length === 0) return value;
+
+		const counts = await this.prisma.hashPageCount.findMany({
+			where: { hash: { in: value.map((r) => r.hash) } },
+			select: { hash: true, pageCount: true },
+		});
+
+		// The hash column collates case-insensitively, so what comes back can
+		// differ in case from what went in.
+		const overLimit = new Set(
+			counts.filter((c) => c.pageCount > FAN_OUT_PAGE_LIMIT).map((c) => c.hash.toLowerCase())
+		);
+		if (overLimit.size === 0) return value;
+
+		const kept = value.filter((r) => !overLimit.has(r.hash.toLowerCase()));
+		console.log(`🚧 Dropped ${value.length - kept.length} over-shared results`);
+		return kept;
+	}
 	public async getScrapedTrueResults<T>(
 		key: string,
 		maxSizeGB?: number,
@@ -145,7 +195,7 @@ export class ScrapedService extends DatabaseClient {
 		updateUpdatedAt: boolean = true,
 		replaceOldScrape: boolean = false
 	) {
-		value = usableResults(value);
+		value = await this.withoutFannedOutHashes(usableResults(value));
 		// Fetch the existing record
 		const existingRecord: Scraped | null = await this.prisma.scrapedTrue.findUnique({
 			where: { key },
@@ -191,7 +241,7 @@ export class ScrapedService extends DatabaseClient {
 		updateUpdatedAt: boolean = true,
 		replaceOldScrape: boolean = false
 	) {
-		value = usableResults(value);
+		value = await this.withoutFannedOutHashes(usableResults(value));
 		// Fetch the existing record
 		const existingRecord: Scraped | null = await this.prisma.scraped.findUnique({
 			where: { key },
