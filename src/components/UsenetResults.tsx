@@ -7,6 +7,7 @@ import {
 	isNzb2rdDuplicate,
 	trackNzb2rdJob,
 } from '@/utils/nzb2rd';
+import { readRdOAuthCredentials } from '@/utils/rdTokenStorage';
 import { TRANSFER_LABELS, TRANSFER_STEP_TOAST_MS, TRANSFER_TOAST_MS } from '@/utils/transferPhase';
 import { Check, ChevronDown, ChevronRight, Loader2, Send } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
@@ -184,6 +185,10 @@ const UsenetResults = ({ imdbId, seasonNum, title, rdKey }: UsenetResultsProps) 
 				title: result.title,
 				imdbId,
 				rdKey,
+				// The access token above dies 24h after login and this fetch can sit
+				// in nzb2rd's queue for days; these do not expire, so the service can
+				// mint a live token when it actually reaches Real-Debrid.
+				oauth: readRdOAuthCredentials(),
 			});
 
 			if (isNzb2rdDuplicate(job)) {
@@ -276,7 +281,11 @@ const UsenetResults = ({ imdbId, seasonNum, title, rdKey }: UsenetResultsProps) 
 				) : (
 					<ChevronRight className="h-4 w-4 shrink-0" />
 				)}
-				<span>Usenet</span>
+				{/* The hyphen is a break opportunity, so a narrow screen would otherwise
+				    split the service name across two lines as "Real-" / "Debrid". */}
+				<span>
+					Send NZBs from Usenet to <span className="whitespace-nowrap">Real-Debrid</span>
+				</span>
 				{results !== null && (
 					<span className="text-sm text-gray-400">({results.length})</span>
 				)}
