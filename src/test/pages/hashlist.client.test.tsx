@@ -29,6 +29,7 @@ vi.mock('@/hooks/auth', () => ({
 	useRealDebridAccessToken: vi.fn(() => [null, false, false]),
 	useAllDebridApiKey: vi.fn(() => null),
 	useTorBoxAccessToken: vi.fn(() => null),
+	usePremiumizeCredential: () => null,
 }));
 
 vi.mock('@/contexts/LibraryCacheContext', () => ({
@@ -120,7 +121,7 @@ describe('HashlistPage', () => {
 		const HashlistPage = (await import('@/pages/hashlist')).default;
 		render(<HashlistPage />);
 
-		expect(screen.getByText('Login to RD/AD/TB to download')).toBeInTheDocument();
+		expect(screen.getByText('Login to RD/AD/TB/PM to download')).toBeInTheDocument();
 	});
 
 	it('should render pagination controls', async () => {

@@ -15,6 +15,12 @@ vi.mock('./ReportButton', () => ({
 	default: () => <div data-testid="report-button" />,
 }));
 
+const openWatchSpy = vi.fn();
+vi.mock('@/utils/watchService', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('@/utils/watchService')>();
+	return { ...actual, openWatch: (...args: any[]) => openWatchSpy(...args) };
+});
+
 const baseResult: SearchResult = {
 	title: 'Sample Movie',
 	fileSize: 1024 * 10,
@@ -22,6 +28,7 @@ const baseResult: SearchResult = {
 	rdAvailable: false,
 	adAvailable: false,
 	tbAvailable: false,
+	pmAvailable: false,
 	files: [{ fileId: 1, filename: 'Sample.mkv', filesize: 1024 * 10 }],
 	noVideos: false,
 	medianFileSize: 10,
@@ -38,6 +45,7 @@ const renderComponent = (override?: Partial<React.ComponentProps<typeof MovieSea
 		rdKey: 'rd-key',
 		adKey: null,
 		torboxKey: null,
+		premiumizeKey: null,
 		player: '',
 		hashAndProgress: {},
 		handleShowInfo: vi.fn(),
@@ -47,9 +55,11 @@ const renderComponent = (override?: Partial<React.ComponentProps<typeof MovieSea
 		addRd: vi.fn().mockResolvedValue(undefined),
 		addAd: vi.fn().mockResolvedValue(undefined),
 		addTb: vi.fn().mockResolvedValue(undefined),
+		addPm: vi.fn().mockResolvedValue(undefined),
 		deleteRd: vi.fn().mockResolvedValue(undefined),
 		deleteAd: vi.fn().mockResolvedValue(undefined),
 		deleteTb: vi.fn().mockResolvedValue(undefined),
+		deletePm: vi.fn().mockResolvedValue(undefined),
 		imdbId: 'tt123',
 		isHashServiceChecking: () => false,
 		...override,
@@ -112,6 +122,7 @@ describe('MovieSearchResults', () => {
 		const tbCachedResult: SearchResult = {
 			...baseResult,
 			tbAvailable: true,
+			pmAvailable: false,
 			rdAvailable: false,
 		};
 
@@ -271,6 +282,7 @@ describe('MovieSearchResults', () => {
 			rdAvailable: false,
 			adAvailable: true,
 			tbAvailable: true,
+			pmAvailable: false,
 		};
 
 		const labelsInOrder = (container: HTMLElement) =>
@@ -405,6 +417,39 @@ describe('MovieSearchResults', () => {
 			});
 
 			expect(container.querySelector('[data-action-separator]')).toBeNull();
+		});
+	});
+
+	describe('Premiumize watch', () => {
+		it('hands the Premiumize key to openWatch for a PM-cached result', async () => {
+			// The render-time and click-time service picks are two separate calls;
+			// leaving the key out of the second silently does nothing on click.
+			openWatchSpy.mockClear();
+			renderComponent({
+				rdKey: null,
+				premiumizeKey: 'pm-key',
+				player: 'windows/vlc',
+				filteredResults: [{ ...baseResult, rdAvailable: false, pmAvailable: true }],
+			});
+
+			await userEvent.click(screen.getByTitle('Watch via Premiumize'));
+
+			await waitFor(() => expect(openWatchSpy).toHaveBeenCalledTimes(1));
+			expect(openWatchSpy.mock.calls[0][0]).toMatchObject({
+				service: 'pm',
+				keys: expect.objectContaining({ premiumizeKey: 'pm-key' }),
+			});
+		});
+
+		it('offers no watch button when the user has no Premiumize key', () => {
+			renderComponent({
+				rdKey: null,
+				premiumizeKey: null,
+				player: 'windows/vlc',
+				filteredResults: [{ ...baseResult, rdAvailable: false, pmAvailable: true }],
+			});
+
+			expect(screen.queryByTitle('Watch via Premiumize')).toBeNull();
 		});
 	});
 });

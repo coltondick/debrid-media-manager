@@ -1,27 +1,31 @@
 import {
 	useAllDebridApiKey,
 	useDebridLogin,
+	usePremiumizeCredential,
 	useRealDebridAccessToken,
 	useTorBoxAccessToken,
 } from '@/hooks/auth';
+import { TORBOX_REFERRAL_URL } from '@/utils/referrals';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { useEffect } from 'react';
 
 export default function StartPage() {
 	const router = useRouter();
-	const { loginWithRealDebrid, loginWithAllDebrid, loginWithTorbox } = useDebridLogin();
+	const { loginWithRealDebrid, loginWithAllDebrid, loginWithTorbox, loginWithPremiumize } =
+		useDebridLogin();
 	const [rdToken] = useRealDebridAccessToken();
 	const adKey = useAllDebridApiKey();
 	const tbKey = useTorBoxAccessToken();
+	const pmKey = usePremiumizeCredential();
 
 	// Redirect to index if already logged in
 	useEffect(() => {
-		const isLoggedIn = rdToken || adKey || tbKey;
+		const isLoggedIn = rdToken || adKey || tbKey || pmKey;
 		if (isLoggedIn) {
 			router.push('/');
 		}
-	}, [rdToken, adKey, tbKey, router]);
+	}, [rdToken, adKey, tbKey, pmKey, router]);
 
 	return (
 		<div className="flex h-screen flex-col items-center justify-center">
@@ -106,11 +110,29 @@ export default function StartPage() {
 					</button>
 					<a
 						className="m-2 rounded bg-green-500 px-4 py-2 text-white hover:bg-green-600"
-						href="https://torbox.app/subscription?referral=74ffa560-7381-4a18-adb1-cef97378c670"
+						href={TORBOX_REFERRAL_URL}
 						target="_blank"
 						rel="noopener noreferrer"
 					>
 						Create an account with Torbox
+					</a>
+				</div>
+
+				{/* Premiumize */}
+				<div className="flex flex-row">
+					<button
+						className="m-2 rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
+						onClick={loginWithPremiumize}
+					>
+						Login with Premiumize
+					</button>
+					<a
+						className="m-2 rounded bg-green-500 px-4 py-2 text-white hover:bg-green-600"
+						href="https://www.premiumize.me/"
+						target="_blank"
+						rel="noopener noreferrer"
+					>
+						Create an account with Premiumize
 					</a>
 				</div>
 
