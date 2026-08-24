@@ -102,7 +102,9 @@ describe('/api/stremio-tb/[userid]/play/[hash]', () => {
 			query: { userid: 'user1', hash: '123:456', h: 'abcdef1234' },
 		});
 		await handler(req, res);
-		expect(mockGetBiggestFile).toHaveBeenCalledWith('key', 'abcdef1234');
+		expect(mockGetBiggestFile).toHaveBeenCalledWith('key', 'abcdef1234', {
+			releaseIfAdded: true,
+		});
 		expect(res.redirect).toHaveBeenCalledWith('https://stream.test/fallback.mkv');
 	});
 
@@ -119,7 +121,9 @@ describe('/api/stremio-tb/[userid]/play/[hash]', () => {
 			},
 		});
 		await handler(req, res);
-		expect(mockGetFileByName).toHaveBeenCalledWith('key', 'abcdef1234', 'episode.mkv');
+		expect(mockGetFileByName).toHaveBeenCalledWith('key', 'abcdef1234', 'episode.mkv', {
+			releaseIfAdded: true,
+		});
 		expect(res.redirect).toHaveBeenCalledWith('https://stream.test/episode.mkv');
 	});
 
@@ -132,7 +136,8 @@ describe('/api/stremio-tb/[userid]/play/[hash]', () => {
 		await handler(req, res);
 		expect(mockGetBiggestFile).toHaveBeenCalledWith(
 			'key',
-			'fbadffe5476df0674dbec75e81426895e40b6427'
+			'fbadffe5476df0674dbec75e81426895e40b6427',
+			{ releaseIfAdded: true }
 		);
 		expect(res.redirect).toHaveBeenCalledWith('https://stream.test/movie.mkv');
 	});
@@ -151,7 +156,8 @@ describe('/api/stremio-tb/[userid]/play/[hash]', () => {
 		expect(mockGetFileByName).toHaveBeenCalledWith(
 			'key',
 			'fbadffe5476df0674dbec75e81426895e40b6427',
-			'ep01.mkv'
+			'ep01.mkv',
+			{ releaseIfAdded: true }
 		);
 		expect(res.redirect).toHaveBeenCalledWith('https://stream.test/ep01.mkv');
 	});
@@ -243,5 +249,107 @@ describe('/api/stremio-tb/[userid]/play/[hash]', () => {
 			await handler(req, res);
 			expect(res.status).toHaveBeenCalledWith(500);
 		});
+	});
+
+	// Regression: a TorBox torrent id only resolves inside the account that
+	// created it - three of three foreign ids answered 500 DATABASE_ERROR when
+	// probed on 2026-08-24 - so for someone else's cast the direct lookup is a
+	// guaranteed round trip into a wall before the hash fallback runs.
+	it("goes straight to the hash for a cast that is not the viewer's own", async () => {
+		mockRepository.getTorBoxCastProfile = vi.fn().mockResolvedValue({ apiKey: 'key' });
+		vi.mocked(getFileByNameTorBoxStreamUrl).mockResolvedValue([
+			'https://tb/dl',
+			1,
+			2,
+			3,
+			'Show.S01E01.mkv',
+		] as any);
+
+		const req = createMockRequest({
+			query: {
+				userid: 'user1',
+				hash: '999:0',
+				h: 'fbadffe5476df0674dbec75e81426895e40b6427',
+				file: 'Show.S01E01.mkv',
+			},
+		});
+		await handler(req, res);
+
+		expect(requestDownloadLink).not.toHaveBeenCalled();
+		expect(res.redirect).toHaveBeenCalledWith('https://tb/dl');
+	});
+
+	it("still tries the direct lookup for the caster's own row", async () => {
+		mockRepository.getTorBoxCastProfile = vi.fn().mockResolvedValue({ apiKey: 'key' });
+		vi.mocked(requestDownloadLink).mockResolvedValue({
+			success: true,
+			data: 'https://tb/direct',
+		} as any);
+
+		const req = createMockRequest({
+			query: {
+				userid: 'user1',
+				hash: '999:0',
+				h: 'fbadffe5476df0674dbec75e81426895e40b6427',
+				file: 'Show.S01E01.mkv',
+				own: '1',
+			},
+		});
+		await handler(req, res);
+
+		expect(requestDownloadLink).toHaveBeenCalled();
+		expect(res.redirect).toHaveBeenCalledWith('https://tb/direct');
+	});
+
+	// The viewer never asked for the torrent that had to be added to resolve
+	// someone else's cast, so the play path hands it straight back.
+	it('asks the hash fallback to release whatever it added', async () => {
+		mockRepository.getTorBoxCastProfile = vi.fn().mockResolvedValue({ apiKey: 'key' });
+		vi.mocked(getFileByNameTorBoxStreamUrl).mockResolvedValue([
+			'https://tb/dl',
+			1,
+			2,
+			3,
+			'Show.S01E01.mkv',
+		] as any);
+
+		const req = createMockRequest({
+			query: {
+				userid: 'user1',
+				hash: '999:0',
+				h: 'fbadffe5476df0674dbec75e81426895e40b6427',
+				file: 'Show.S01E01.mkv',
+			},
+		});
+		await handler(req, res);
+
+		expect(getFileByNameTorBoxStreamUrl).toHaveBeenCalledWith(
+			'key',
+			'fbadffe5476df0674dbec75e81426895e40b6427',
+			'Show.S01E01.mkv',
+			{ releaseIfAdded: true }
+		);
+	});
+
+	it('releases on the legacy hash-only form as well', async () => {
+		mockRepository.getTorBoxCastProfile = vi.fn().mockResolvedValue({ apiKey: 'key' });
+		vi.mocked(getBiggestFileTorBoxStreamUrl).mockResolvedValue([
+			'https://tb/dl',
+			1,
+			2,
+			3,
+			'Movie.mkv',
+		] as any);
+
+		const req = createMockRequest({
+			query: { userid: 'user1', hash: 'fbadffe5476df0674dbec75e81426895e40b6427' },
+		});
+		await handler(req, res);
+
+		expect(getBiggestFileTorBoxStreamUrl).toHaveBeenCalledWith(
+			'key',
+			'fbadffe5476df0674dbec75e81426895e40b6427',
+			{ releaseIfAdded: true }
+		);
 	});
 });

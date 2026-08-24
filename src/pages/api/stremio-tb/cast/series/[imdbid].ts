@@ -1,5 +1,6 @@
 import { repository as db } from '@/services/repository';
 import { getTorBoxStreamUrlKeepTorrent } from '@/utils/getTorBoxStreamUrl';
+import { readProviderKey } from '@/utils/providerKeyHeader';
 import { generateTorBoxUserId } from '@/utils/torboxCastApiHelpers';
 import { NextApiRequest, NextApiResponse } from 'next';
 
@@ -7,7 +8,8 @@ import { NextApiRequest, NextApiResponse } from 'next';
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
 	res.setHeader('access-control-allow-origin', '*');
 
-	const { imdbid, apiKey, hash, fileIds } = req.query;
+	const { imdbid, hash, fileIds } = req.query;
+	const apiKey = readProviderKey(req, ['apiKey']);
 	if (!apiKey || !hash || !fileIds) {
 		res.status(400).json({
 			status: 'error',
@@ -15,7 +17,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 		});
 		return;
 	}
-	if (typeof imdbid !== 'string' || typeof apiKey !== 'string' || typeof hash !== 'string') {
+	if (typeof imdbid !== 'string' || typeof hash !== 'string') {
 		res.status(400).json({
 			status: 'error',
 			errorMessage: 'Invalid "apiKey" or "hash" query parameter',
@@ -40,12 +42,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 				const [streamUrl, seasonNumber, episodeNumber, fileSize, torrentId, , filename] =
 					await getTorBoxStreamUrlKeepTorrent(apiKey, hash, fileId, 'series');
 
+				// The bare imdb id is the movie key and TorBoxCast is unique on
+				// (imdbId, userId, hash), so an unparsed episode overwrites
+				// whatever this torrent cast before it.
+				if (streamUrl && (seasonNumber < 0 || episodeNumber < 0)) {
+					errorEpisodes.push(`File ${fileId} (no episode number in filename)`);
+					continue;
+				}
+
 				if (streamUrl) {
-					// Build imdbId with season:episode suffix
-					let episodeImdbId = imdbid;
-					if (seasonNumber >= 0 && episodeNumber >= 0) {
-						episodeImdbId = `${imdbid}:${seasonNumber}:${episodeNumber}`;
-					}
+					const episodeImdbId = `${imdbid}:${seasonNumber}:${episodeNumber}`;
 
 					await db.saveTorBoxCast(
 						episodeImdbId,

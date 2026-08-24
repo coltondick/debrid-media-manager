@@ -18,7 +18,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 	res.setHeader('access-control-allow-origin', '*');
 	res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
-	const { userid, hash, file, h: fallbackHash } = req.query;
+	const { userid, hash, file, h: fallbackHash, own } = req.query;
 	if (typeof userid !== 'string' || typeof hash !== 'string') {
 		res.status(400).json({
 			status: 'error',
@@ -79,10 +79,23 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 				return;
 			}
 
-			// Try direct lookup first. Skip retries so a 500 from TorBox (e.g.
-			// when torrentId belongs to a different user) falls back to the hash
-			// path immediately instead of stalling on ~2min of exponential backoff.
+			// A torrent id only resolves inside the account that created it, so for
+			// someone else's cast the direct lookup is a guaranteed 500 - measured
+			// 2026-08-24, three of three foreign ids answered DATABASE_ERROR. The
+			// stream route marks the caster's own rows with `own=1`; without it,
+			// skip straight to the hash rather than spend the round trip.
+			//
+			// Retries stay off even for an owned row: a 500 there (the torrent was
+			// deleted) should reach the hash fallback now, not after ~2 min of
+			// exponential backoff.
+			// A web download is always the caster's own - the stream route drops
+			// other users' web downloads because no other key can resolve them.
+			const canResolveDirectly =
+				own === '1' || isWebDownload || typeof fallbackHash !== 'string';
 			try {
+				if (!canResolveDirectly) {
+					throw new Error("not this account's torrent id");
+				}
 				const downloadResult = isWebDownload
 					? await requestWebDownloadLink(
 							apiKey,
@@ -105,7 +118,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 				);
 			}
 
-			// If direct lookup failed and we have a fallback hash, use it
+			// If direct lookup failed and we have a fallback hash, use it.
+			//
+			// Reaching here means the torrent is not this viewer's, so resolving
+			// it has to add it to their account first. `releaseIfAdded` hands it
+			// straight back: they never asked for it, and the minted link keeps
+			// working without it - an in-flight read survives the delete and a
+			// later seek still answers 206.
 			if (!streamUrl && typeof fallbackHash === 'string') {
 				if (isWebDownload) {
 					streamUrl = await getWebDownloadStreamUrlByHash(apiKey, fallbackHash, filename);
@@ -113,11 +132,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 					const [url] = await getFileByNameTorBoxStreamUrl(
 						apiKey,
 						fallbackHash,
-						filename
+						filename,
+						{
+							releaseIfAdded: true,
+						}
 					);
 					streamUrl = url;
 				} else {
-					const [url] = await getBiggestFileTorBoxStreamUrl(apiKey, fallbackHash);
+					const [url] = await getBiggestFileTorBoxStreamUrl(apiKey, fallbackHash, {
+						releaseIfAdded: true,
+					});
 					streamUrl = url;
 				}
 			}
@@ -132,17 +156,22 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 				throw new Error('Failed to get stream URL for web download');
 			}
 		} else {
-			// Legacy format: torrent hash
+			// Legacy format: torrent hash. Same reasoning as the fallback above -
+			// this is a play, so anything added to serve it is handed back.
 			if (filename) {
 				// Match by filename (for TV episodes from season packs)
-				const [url] = await getFileByNameTorBoxStreamUrl(apiKey, hash, filename);
+				const [url] = await getFileByNameTorBoxStreamUrl(apiKey, hash, filename, {
+					releaseIfAdded: true,
+				});
 				if (!url) {
 					throw new Error(`Failed to find file "${filename}" in torrent`);
 				}
 				streamUrl = url;
 			} else {
 				// No filename provided - use biggest file (for movies)
-				const [url] = await getBiggestFileTorBoxStreamUrl(apiKey, hash);
+				const [url] = await getBiggestFileTorBoxStreamUrl(apiKey, hash, {
+					releaseIfAdded: true,
+				});
 				if (!url) {
 					throw new Error('Failed to get stream URL for torrent');
 				}
