@@ -22,7 +22,6 @@ export type { TorBoxCachedResponse, TorBoxTorrentInfo, TorBoxUser, TorBoxWebDown
 // Safely access Next.js runtime config in test/non-Next environments
 const fallbackRuntimeConfig = {
 	proxy: '',
-	authProxy: '',
 	torboxHostname: 'https://api.torbox.app',
 };
 
@@ -59,6 +58,12 @@ const concurrencyWaiters: Array<() => void> = [];
 
 // Custom error class for rate limiting
 export class TorBoxRateLimitError extends Error {
+	/**
+	 * Thrown only once this client's own retry ladder is spent, so an outer
+	 * layer must not run it again - see UnifiedRateLimiter.isRetryableError.
+	 */
+	readonly retryable = false;
+
 	constructor(message: string = 'TorBox API rate limit exceeded. Please wait and try again.') {
 		super(message);
 		this.name = 'TorBoxRateLimitError';
@@ -159,23 +164,26 @@ function getProxyUrl(baseUrl: string): string {
 
 // Get the base URL for TorBox API (with or without proxy)
 // Server-side calls bypass the proxy (the CF Worker rejects them with 403);
-// client-side calls go through a proxy to avoid CORS.
+// client-side calls go through the Cloudflare Worker to avoid CORS.
 //
-// Browser traffic goes through our own anticors (authProxy) rather than the
-// Cloudflare Worker, because that is the only hop we can observe: it is where
-// `/is-torbox-down-or-just-me` counts what real users' TorBox calls actually
-// returned. The Worker stays the path for `credentialInQuery` callers -
-// requestdl puts the raw API key in `?token=`, and routing those through our
-// own nginx would write user API keys into its access log.
-function getTorBoxBaseUrl(options?: { credentialInQuery?: boolean }): string {
+// Browser traffic must NOT go through our own anticors (`authProxy`). That
+// hostname is wildcard DNS onto the single dmm-01 host, so it pools every
+// user's TorBox calls into one per-IP rate-limit bucket - TorBox began 429ing
+// 7 minutes after we tried it on 2026-08-24 and throttled ~20% of all calls
+// until it was reverted. The Worker egresses from Cloudflare's pool instead,
+// which is what keeps each user in their own bucket. It is also the only safe
+// path for requestdl, which puts the raw API key in `?token=`: our own nginx
+// logs query strings, the Worker does not.
+//
+// Observing this traffic is the Worker's job, not a reason to re-route it.
+function getTorBoxBaseUrl(): string {
 	const torboxHost = config.torboxHostname || BASE_URL;
 	const isServer = typeof window === 'undefined';
 	if (isServer) {
 		return torboxHost;
 	}
-	const proxy = options?.credentialInQuery ? config.proxy : config.authProxy || config.proxy;
-	if (proxy) {
-		return `${getProxyUrl(proxy)}${torboxHost}`;
+	if (config.proxy) {
+		return `${getProxyUrl(config.proxy)}${torboxHost}`;
 	}
 	return torboxHost;
 }
@@ -279,6 +287,24 @@ torBoxAxios.interceptors.response.use(
 			return Promise.reject(error);
 		}
 
+		// TorBox answers application conditions with an HTTP 5xx carrying its own
+		// envelope: DATABASE_ERROR when the torrent id is not in the account, and
+		// DOWNLOAD_SERVER_ERROR when it will not carry out a control operation.
+		// Neither clears on retry - and retrying a mutation is what manufactures
+		// the first one, because the delete lands, the response is lost, and the
+		// retry finds the torrent already gone. realDebrid.ts skips retries on RD's
+		// equivalent (a 503 carrying an error_code) for the same reason.
+		//
+		// An edge 5xx has no envelope - TorBox never answered - and stays
+		// retryable, which is the case the ladder was built for.
+		const isApplicationError =
+			status >= 500 && status < 600 && error.response?.data?.success === false;
+		if (isApplicationError) {
+			releaseSlot();
+			recordOutcome(originalConfig, status);
+			return Promise.reject(error);
+		}
+
 		const shouldRetry = (status >= 500 && status < 600) || is429;
 		if (!shouldRetry) {
 			releaseSlot();
@@ -359,7 +385,8 @@ export const controlTorrent = async (
 	accessToken: string,
 	params: {
 		torrent_id?: number;
-		operation: 'reannounce' | 'delete' | 'resume' | 'pause';
+		// TorBox's own set; sending `pause` earns a 400 INVALID_OPTION
+		operation: 'reannounce' | 'delete' | 'resume' | 'stop_seeding';
 		all?: boolean;
 	}
 ): Promise<TorBoxResponse<null>> => {
@@ -430,7 +457,7 @@ export const requestDownloadLink = async (
 	options?: { skipRetry?: boolean; timeout?: number }
 ): Promise<TorBoxResponse<string>> => {
 	const response = await torBoxAxios.get<TorBoxResponse<string>>(
-		`${getTorBoxBaseUrl({ credentialInQuery: true })}/${API_VERSION}/api/torrents/requestdl`,
+		`${getTorBoxBaseUrl()}/${API_VERSION}/api/torrents/requestdl`,
 		{
 			params: {
 				token: accessToken,
@@ -607,7 +634,9 @@ export const controlWebDownload = async (
 	accessToken: string,
 	params: {
 		webdl_id?: number;
-		operation: 'delete' | 'pause' | 'resume';
+		// TorBox accepts only `delete` here - `pause` and `resume` are 400
+		// INVALID_OPTION, unlike the torrent endpoint's wider set
+		operation: 'delete';
 		all?: boolean;
 	}
 ): Promise<TorBoxResponse<null>> => {
@@ -638,7 +667,7 @@ export const requestWebDownloadLink = async (
 	options?: { skipRetry?: boolean; timeout?: number }
 ): Promise<TorBoxResponse<string>> => {
 	const response = await torBoxAxios.get<TorBoxResponse<string>>(
-		`${getTorBoxBaseUrl({ credentialInQuery: true })}/${API_VERSION}/api/webdl/requestdl`,
+		`${getTorBoxBaseUrl()}/${API_VERSION}/api/webdl/requestdl`,
 		{
 			params: {
 				token: accessToken,
