@@ -21,6 +21,7 @@ import { handleCastTvShowAllDebrid } from '@/utils/allDebridCastApiClient';
 import axiosWithRetry from '@/utils/axiosWithRetry';
 import { getLocalStorageBoolean, getLocalStorageItemOrDefault } from '@/utils/browserStorage';
 import { handleCastTvShow } from '@/utils/castApiClient';
+import { fileContentRequest } from '@/utils/contentRequestsApi';
 import { handleCopyOrDownloadMagnet } from '@/utils/copyMagnet';
 import { markTransferredHashes } from '@/utils/debridUploader';
 import { delay } from '@/utils/delay';
@@ -77,7 +78,7 @@ import {
 import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
-import { FunctionComponent, useEffect, useMemo, useRef, useState } from 'react';
+import { FunctionComponent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import toast, { Toaster } from 'react-hot-toast';
 
@@ -179,6 +180,42 @@ const TvSearch: FunctionComponent = () => {
 
 	const router = useRouter();
 	const { imdbid, seasonNum } = router.query;
+
+	/**
+	 * A user holding only Real-Debrid cannot start a transfer at all: the uploader
+	 * needs a TorBox or AllDebrid key for the source side. They are exactly the
+	 * people the request board exists for, so the Request button appears for them
+	 * and for nobody else — anyone with a second service can just send it.
+	 */
+	// The Request button is for Real-Debrid users: it files an ask for a
+	// release, which somebody with a TorBox or AllDebrid account then fulfils.
+	// It used to hide from a user who also held one of those keys, but that
+	// conflated "can ask" with "cannot fetch" — a user with both may still want
+	// to leave the ask for someone else rather than spend their own quota.
+	const canRequest = Boolean(rdKey);
+
+	const handleRequestContent = useCallback(
+		async (result: SearchResult) => {
+			if (!rdKey) return;
+			try {
+				await fileContentRequest(rdKey, {
+					hash: result.hash,
+					imdbId: imdbid as string,
+					title: result.title,
+					mediaType: 'show',
+				});
+				toast.success(
+					'Requested. Anyone with TorBox or AllDebrid can now send it to your library.',
+					{ duration: 6000 }
+				);
+			} catch (error) {
+				toast.error(
+					`Could not request: ${error instanceof Error ? error.message : 'unreachable'}`
+				);
+			}
+		},
+		[rdKey, imdbid]
+	);
 
 	// Use shared hooks
 	const {
@@ -1438,6 +1475,7 @@ const TvSearch: FunctionComponent = () => {
 				addTb={addTb}
 				addPm={addPm}
 				sendTbToRd={sendTbToRd}
+				requestContent={canRequest ? handleRequestContent : undefined}
 				deleteRd={deleteRd}
 				deleteAd={deleteAd}
 				deleteTb={deleteTb}

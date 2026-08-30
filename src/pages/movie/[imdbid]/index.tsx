@@ -20,6 +20,7 @@ import { handleCastMovieAllDebrid } from '@/utils/allDebridCastApiClient';
 import axiosWithRetry from '@/utils/axiosWithRetry';
 import { getLocalStorageBoolean, getLocalStorageItemOrDefault } from '@/utils/browserStorage';
 import { handleCastMovie } from '@/utils/castApiClient';
+import { fileContentRequest } from '@/utils/contentRequestsApi';
 import { handleCopyOrDownloadMagnet } from '@/utils/copyMagnet';
 import { markTransferredHashes } from '@/utils/debridUploader';
 import {
@@ -66,7 +67,7 @@ import { Cast, CloudOff, Eye as EyeIcon, Loader2, Search, Sparkles, Zap } from '
 import getConfig from 'next/config';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
-import { FunctionComponent, useEffect, useMemo, useRef, useState } from 'react';
+import { FunctionComponent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import toast, { Toaster } from 'react-hot-toast';
 
@@ -176,6 +177,42 @@ const MovieSearch: FunctionComponent = () => {
 	const adKey = useAllDebridApiKey();
 	const torboxKey = useTorBoxAccessToken();
 	const premiumizeKey = usePremiumizeCredential();
+
+	/**
+	 * A user holding only Real-Debrid cannot start a transfer at all: the uploader
+	 * needs a TorBox or AllDebrid key for the source side. They are exactly the
+	 * people the request board exists for, so the Request button appears for them
+	 * and for nobody else — anyone with a second service can just send it.
+	 */
+	// The Request button is for Real-Debrid users: it files an ask for a
+	// release, which somebody with a TorBox or AllDebrid account then fulfils.
+	// It used to hide from a user who also held one of those keys, but that
+	// conflated "can ask" with "cannot fetch" — a user with both may still want
+	// to leave the ask for someone else rather than spend their own quota.
+	const canRequest = Boolean(rdKey);
+
+	const handleRequestContent = useCallback(
+		async (result: SearchResult) => {
+			if (!rdKey) return;
+			try {
+				await fileContentRequest(rdKey, {
+					hash: result.hash,
+					imdbId: imdbid as string,
+					title: result.title,
+					mediaType: 'movie',
+				});
+				toast.success(
+					'Requested. Anyone with TorBox or AllDebrid can now send it to your library.',
+					{ duration: 6000 }
+				);
+			} catch (error) {
+				toast.error(
+					`Could not request: ${error instanceof Error ? error.message : 'unreachable'}`
+				);
+			}
+		},
+		[rdKey, imdbid]
+	);
 
 	// Library sync status - used to prevent auto-availability check while library is still loading
 	const { isFetching: isLibrarySyncing } = useLibraryCache();
@@ -1046,6 +1083,7 @@ const MovieSearch: FunctionComponent = () => {
 						addTb={addTb}
 						addPm={addPm}
 						sendTbToRd={sendTbToRd}
+						requestContent={canRequest ? handleRequestContent : undefined}
 						deleteRd={deleteRd}
 						deleteAd={deleteAd}
 						deleteTb={deleteTb}

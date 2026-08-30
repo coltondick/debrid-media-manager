@@ -200,6 +200,51 @@ describe('MainActions', () => {
 		);
 	});
 
+	it('links to the request board for a fulfiller — a TorBox, AllDebrid or Premiumize user', () => {
+		// A user with no Real-Debrid at all, only TorBox: they are exactly who the
+		// board is for, so the link is theirs even though Transfers is not.
+		render(
+			<MainActions
+				rdUser={null}
+				tbUser={baseTbUser}
+				adUser={false}
+				pmUser={false}
+				isLoading={false}
+			/>
+		);
+
+		expect(screen.getByRole('link', { name: /requests/i }).getAttribute('href')).toBe(
+			'/requests'
+		);
+		expect(screen.queryByRole('link', { name: /transfers/i })).toBeNull();
+	});
+
+	it('shows the request board to an AllDebrid user', () => {
+		render(<MainActions rdUser={null} tbUser={null} adUser pmUser={false} isLoading={false} />);
+		expect(screen.getByRole('link', { name: /requests/i })).not.toBeNull();
+	});
+
+	it('hides the request board from a Premiumize-only user, who has nothing to fulfil with', () => {
+		// The uploader cannot source a transfer from Premiumize, so a Premiumize
+		// user is not sent to the board at all.
+		render(<MainActions rdUser={null} tbUser={null} adUser={false} pmUser isLoading={false} />);
+		expect(screen.queryByRole('link', { name: /requests/i })).toBeNull();
+	});
+
+	it('hides the request board from a Real-Debrid-only user, who asks from the search result instead', () => {
+		render(
+			<MainActions
+				rdUser={baseRdUser}
+				tbUser={null}
+				adUser={false}
+				pmUser={false}
+				isLoading={false}
+			/>
+		);
+
+		expect(screen.queryByRole('link', { name: /requests/i })).toBeNull();
+	});
+
 	it('hides Transfers without Real-Debrid, since every transfer lands there', () => {
 		render(
 			<MainActions
