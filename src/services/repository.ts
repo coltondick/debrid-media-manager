@@ -351,6 +351,28 @@ export class Repository {
 		return this.availabilityService.upsertAvailability(data);
 	}
 
+	public saveInstantAvailability(
+		imdbId: string,
+		rows: Array<{ hash: string; filename: string; bytes: number }>
+	) {
+		return this.availabilityService.saveInstantAvailability(imdbId, rows);
+	}
+
+	public getDebridioRefreshedAt(key: string) {
+		return this.availabilityService.getDebridioRefreshedAt(key);
+	}
+
+	public markDebridioRefreshed(key: string) {
+		return this.availabilityService.markDebridioRefreshed(key);
+	}
+
+	public saveInstantAvailabilityAd(
+		imdbId: string,
+		rows: Array<{ hash: string; filename: string; bytes: number }>
+	) {
+		return this.availabilityService.saveInstantAvailabilityAd(imdbId, rows);
+	}
+
 	public checkAvailability(imdbId: string, hashes: string[]) {
 		return this.availabilityService.checkAvailability(imdbId, hashes);
 	}
@@ -408,6 +430,10 @@ export class Repository {
 	// Scraped Service Methods
 	public getScrapedTrueResults<T>(key: string, maxSizeGB?: number, page?: number) {
 		return this.scrapedService.getScrapedTrueResults<T>(key, maxSizeGB, page);
+	}
+
+	public getAllScrapedTrueResults(key: string) {
+		return this.scrapedService.getAllScrapedTrueResults(key);
 	}
 
 	public getScrapedResults<T>(key: string, maxSizeGB?: number, page?: number) {
