@@ -5,6 +5,7 @@ import { MainActions } from '@/components/MainActions';
 import { SearchBar } from '@/components/SearchBar';
 import { ServiceCard } from '@/components/ServiceCard';
 import { TraktSection } from '@/components/TraktSection';
+import { ZurgBanner } from '@/components/ZurgBanner';
 import { useAllDebridCastToken } from '@/hooks/allDebridCastToken';
 import { useCurrentUser, useDebridLogin } from '@/hooks/auth';
 import { useCastToken } from '@/hooks/castToken';
@@ -179,6 +180,8 @@ function IndexPage() {
 							<Megaphone className="h-6 w-6 text-yellow-400" />
 						</a>
 					</h1>
+
+					<ZurgBanner />
 
 					{/* Search Bar */}
 					<div className="mb-4 w-full max-w-md">

@@ -90,6 +90,7 @@ vi.mock('@/utils/withAuth', () => ({
 
 vi.mock('lucide-react', () => ({
 	__esModule: true,
+	FolderTree: () => <svg data-testid="folder-tree-icon" />,
 	Megaphone: () => <svg data-testid="megaphone-icon" />,
 	Settings: () => <svg data-testid="settings-icon" />,
 	Star: () => <svg data-testid="star-icon" />,
@@ -172,6 +173,25 @@ describe('IndexPage', () => {
 
 		expect(screen.getByTestId('main-actions')).toBeInTheDocument();
 		expect(screen.queryByText(/Debrid Media Manager is loading/i)).not.toBeInTheDocument();
+	});
+
+	// The zurg banner sits directly under the page title and above the search bar,
+	// so it reads as part of the header rather than as a bar bolted onto the top.
+	it('puts the zurg banner between the title and the search bar', () => {
+		currentUserMock.mockReturnValue(settledFixture);
+
+		render(<IndexPage />);
+
+		const banner = screen.getByRole('link', { name: 'Get zurg' });
+		const title = screen.getByRole('heading', { name: /Debrid Media Manager/i });
+		const searchBar = screen.getByTestId('search-bar');
+		expect(banner.getAttribute('href')).toContain('zurg.debridmediamanager.com');
+		expect(
+			title.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING
+		).toBeTruthy();
+		expect(
+			banner.compareDocumentPosition(searchBar) & Node.DOCUMENT_POSITION_FOLLOWING
+		).toBeTruthy();
 	});
 
 	it('still waits while a configured provider is genuinely in flight', () => {

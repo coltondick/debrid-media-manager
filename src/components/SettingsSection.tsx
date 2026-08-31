@@ -1,3 +1,5 @@
+import { useSponsor } from '@/hooks/useSponsor';
+import { otherStreamsLimitOptions } from '@/utils/sponsorLimits';
 import { AlertTriangle, Check, Link2, Settings } from 'lucide-react';
 import { useState } from 'react';
 import toast from 'react-hot-toast';
@@ -23,8 +25,10 @@ import {
 	defaultTorrentsFilter,
 } from '../utils/settings';
 import { updateTorBoxSizeLimits } from '../utils/torboxCastApiClient';
+import { SponsorPanel } from './SponsorPanel';
 
 export const SettingsSection = () => {
+	const { isSponsor } = useSponsor();
 	const [isMagnetHandlerEnabled, setIsMagnetHandlerEnabled] = useState(() =>
 		getLocalStorageBoolean('settings:magnetHandlerEnabled', defaultMagnetHandlerEnabled)
 	);
@@ -434,6 +438,8 @@ export const SettingsSection = () => {
 				</div>
 				<div className="mt-4 text-sm text-gray-200">
 					<div className="flex flex-col gap-4">
+						<SponsorPanel />
+
 						<div className="rounded border-2 border-yellow-500/30 p-4">
 							<div className="mb-4 flex items-center justify-center text-center text-sm font-medium text-yellow-200">
 								<AlertTriangle className="mr-2 inline-block h-4 w-4 text-yellow-400" />
@@ -527,12 +533,18 @@ export const SettingsSection = () => {
 										value={otherStreamsLimit}
 										onChange={handleOtherStreamsLimitChange}
 									>
-										<option value="0">Don&apos;t show other streams</option>
-										<option value="1">1 stream</option>
-										<option value="2">2 streams</option>
-										<option value="3">3 streams</option>
-										<option value="4">4 streams</option>
-										<option value="5">5 streams</option>
+										{otherStreamsLimitOptions(
+											isSponsor,
+											Number(otherStreamsLimit)
+										).map((count) => (
+											<option key={count} value={String(count)}>
+												{count === 0
+													? `Don't show other streams`
+													: count === 1
+														? '1 stream'
+														: `${count} streams`}
+											</option>
+										))}
 									</select>
 									<p className="mt-1 text-xs text-gray-400">
 										Limits streams from available files, torrents, and other
