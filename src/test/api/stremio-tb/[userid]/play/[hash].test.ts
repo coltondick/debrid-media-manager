@@ -1,6 +1,6 @@
 import handler from '@/pages/api/stremio-tb/[userid]/play/[hash]';
 import { repository } from '@/services/repository';
-import { requestDownloadLink, requestWebDownloadLink } from '@/services/torbox';
+import { requestDownloadLink, requestUsenetLink, requestWebDownloadLink } from '@/services/torbox';
 import { createMockRequest, createMockResponse } from '@/test/utils/api';
 import {
 	getBiggestFileTorBoxStreamUrl,
@@ -16,6 +16,7 @@ vi.mock('@/utils/getTorBoxStreamUrl');
 const mockRepository = vi.mocked(repository);
 const mockRequestDownloadLink = vi.mocked(requestDownloadLink);
 const mockRequestWebDownloadLink = vi.mocked(requestWebDownloadLink);
+const mockRequestUsenetLink = vi.mocked(requestUsenetLink);
 const mockGetBiggestFile = vi.mocked(getBiggestFileTorBoxStreamUrl);
 const mockGetFileByName = vi.mocked(getFileByNameTorBoxStreamUrl);
 const mockGetWebDownloadByHash = vi.mocked(getWebDownloadStreamUrlByHash);
@@ -71,6 +72,61 @@ describe('/api/stremio-tb/[userid]/play/[hash]', () => {
 		const req = createMockRequest({ query: { userid: 'user1', hash: '123:456' } });
 		await handler(req, res);
 		expect(res.redirect).toHaveBeenCalledWith('https://stream.test/video.mkv');
+	});
+
+	// A library web download is addressed as `w<id>:<fileId>`. Its numeric id
+	// comes from a different TorBox table than a torrent's and overlaps it, so
+	// without the prefix the id resolves against the wrong table - and plain
+	// parseInt('w1599037') is NaN, which used to 400 the request outright.
+	it('resolves a w-prefixed id through the web download endpoint', async () => {
+		mockRepository.getTorBoxCastProfile = vi.fn().mockResolvedValue({ apiKey: 'key' });
+		mockRequestWebDownloadLink.mockResolvedValue({
+			success: true,
+			data: 'https://stream.test/webdl.mkv',
+		} as any);
+		const req = createMockRequest({ query: { userid: 'user1', hash: 'w1599037:0' } });
+		await handler(req, res);
+		expect(mockRequestWebDownloadLink).toHaveBeenCalledWith(
+			'key',
+			{ web_id: 1599037, file_id: 0 },
+			expect.anything()
+		);
+		expect(mockRequestDownloadLink).not.toHaveBeenCalled();
+		expect(res.redirect).toHaveBeenCalledWith('https://stream.test/webdl.mkv');
+	});
+
+	it('resolves a u-prefixed id through the usenet endpoint', async () => {
+		mockRepository.getTorBoxCastProfile = vi.fn().mockResolvedValue({ apiKey: 'key' });
+		mockRequestUsenetLink.mockResolvedValue({
+			success: true,
+			data: 'https://stream.test/usenet.mkv',
+		} as any);
+		const req = createMockRequest({ query: { userid: 'user1', hash: 'u2367148:0' } });
+		await handler(req, res);
+		expect(mockRequestUsenetLink).toHaveBeenCalledWith(
+			'key',
+			{ usenet_id: 2367148, file_id: 0 },
+			expect.anything()
+		);
+		expect(mockRequestDownloadLink).not.toHaveBeenCalled();
+		expect(mockRequestWebDownloadLink).not.toHaveBeenCalled();
+		expect(res.redirect).toHaveBeenCalledWith('https://stream.test/usenet.mkv');
+	});
+
+	it('still sends an unprefixed id to the torrent endpoint', async () => {
+		mockRepository.getTorBoxCastProfile = vi.fn().mockResolvedValue({ apiKey: 'key' });
+		mockRequestDownloadLink.mockResolvedValue({
+			success: true,
+			data: 'https://stream.test/torrent.mkv',
+		} as any);
+		const req = createMockRequest({ query: { userid: 'user1', hash: '1599037:0' } });
+		await handler(req, res);
+		expect(mockRequestDownloadLink).toHaveBeenCalledWith(
+			'key',
+			{ torrent_id: 1599037, file_id: 0 },
+			expect.anything()
+		);
+		expect(mockRequestWebDownloadLink).not.toHaveBeenCalled();
 	});
 
 	it('returns 400 for invalid torrentId:fileId format with extra parts', async () => {

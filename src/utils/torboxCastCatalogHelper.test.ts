@@ -8,16 +8,21 @@ vi.mock('@/services/repository', () => ({
 
 vi.mock('@/services/torbox', () => ({
 	getTorrentList: vi.fn(),
+	getWebDownloadList: vi.fn(),
+	getUsenetList: vi.fn(),
 }));
 
 import { repository as db } from '@/services/repository';
-import { getTorrentList } from '@/services/torbox';
+import { getTorrentList, getUsenetList, getWebDownloadList } from '@/services/torbox';
 import { getTorBoxDMMLibrary, getTorBoxDMMTorrent, PAGE_SIZE } from './torboxCastCatalogHelper';
 
 describe('torboxCastCatalogHelper', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		process.env.DMM_ORIGIN = 'https://debridmediamanager.com';
+		// Most cases are about torrents; the merged web-download list is opted into.
+		vi.mocked(getWebDownloadList).mockResolvedValue({ success: true, data: [] } as any);
+		vi.mocked(getUsenetList).mockResolvedValue({ success: true, data: [] } as any);
 	});
 
 	describe('PAGE_SIZE', () => {
@@ -265,5 +270,186 @@ describe('torboxCastCatalogHelper', () => {
 			expect(titles[0]).toMatch(/^a-file/);
 			expect(titles[1]).toMatch(/^z-file/);
 		});
+	});
+});
+
+describe('torboxCastCatalogHelper web downloads', () => {
+	const webDownloads = (count: number, offset = 0) =>
+		Array.from({ length: count }, (_, i) => ({
+			id: 1000 + offset + i,
+			name: `W${offset + i}`,
+		}));
+	const torrents = (count: number, offset = 0) =>
+		Array.from({ length: count }, (_, i) => ({ id: offset + i, name: `T${offset + i}` }));
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		process.env.DMM_ORIGIN = 'https://debridmediamanager.com';
+		vi.mocked(db.getTorBoxCastProfile).mockResolvedValue({ apiKey: 'key' } as any);
+		vi.mocked(getUsenetList).mockResolvedValue({ success: true, data: [] } as any);
+	});
+
+	// Web downloads are a whole second library TorBox keeps in its own table.
+	// The catalog listed only torrents, so 73 of them were invisible in Stremio
+	// while the DMM web library showed them.
+	it('lists web downloads ahead of torrents, prefixing their ids with w', async () => {
+		vi.mocked(getWebDownloadList).mockResolvedValue({
+			success: true,
+			data: webDownloads(2),
+		} as any);
+		vi.mocked(getTorrentList).mockResolvedValue({ success: true, data: torrents(3) } as any);
+
+		const result = await getTorBoxDMMLibrary('user1', 1);
+		if ('error' in result) throw new Error(result.error);
+
+		expect(result.data.metas.map((m) => m.id)).toEqual([
+			'dmm-tb:w1000',
+			'dmm-tb:w1001',
+			'dmm-tb:0',
+			'dmm-tb:1',
+			'dmm-tb:2',
+		]);
+		// Only the unfilled remainder is asked of the torrent list.
+		expect(getTorrentList).toHaveBeenCalledWith('key', { offset: 0, limit: PAGE_SIZE - 2 });
+	});
+
+	it('continues torrents at the offset the straddling page stopped at', async () => {
+		// 14 web downloads: page 1 is all web, page 2 is the last 2 web + 10 torrents,
+		// page 3 must resume at torrent 10 - not 0, and not 24.
+		vi.mocked(getWebDownloadList).mockResolvedValue({
+			success: true,
+			data: webDownloads(14),
+		} as any);
+		vi.mocked(getTorrentList).mockResolvedValue({ success: true, data: torrents(10) } as any);
+
+		await getTorBoxDMMLibrary('user1', 1);
+		expect(getTorrentList).not.toHaveBeenCalled();
+
+		await getTorBoxDMMLibrary('user1', 2);
+		expect(getTorrentList).toHaveBeenLastCalledWith('key', { offset: 0, limit: 10 });
+
+		await getTorBoxDMMLibrary('user1', 3);
+		expect(getTorrentList).toHaveBeenLastCalledWith('key', { offset: 10, limit: PAGE_SIZE });
+	});
+
+	it('skips the torrent call entirely when web downloads fill the page', async () => {
+		vi.mocked(getWebDownloadList).mockResolvedValue({
+			success: true,
+			data: webDownloads(PAGE_SIZE),
+		} as any);
+
+		const result = await getTorBoxDMMLibrary('user1', 1);
+		if ('error' in result) throw new Error(result.error);
+
+		expect(getTorrentList).not.toHaveBeenCalled();
+		expect(result.data.hasMore).toBe(true);
+	});
+
+	// A web download outage must not cost the user their torrents.
+	it('still serves torrents when the web download list fails', async () => {
+		vi.mocked(getWebDownloadList).mockRejectedValue(new Error('TorBox down'));
+		vi.mocked(getTorrentList).mockResolvedValue({ success: true, data: torrents(2) } as any);
+
+		const result = await getTorBoxDMMLibrary('user1', 1);
+		if ('error' in result) throw new Error(result.error);
+		expect(result.data.metas.map((m) => m.id)).toEqual(['dmm-tb:0', 'dmm-tb:1']);
+	});
+
+	it('builds a web download meta from the webdl table, not the torrent one', async () => {
+		vi.mocked(getWebDownloadList).mockResolvedValue({
+			success: true,
+			data: [
+				{
+					id: 1599037,
+					name: 'ztest.rar',
+					files: [{ id: 0, short_name: 'ztest.rar', size: 1024 ** 3 }],
+				},
+			],
+		} as any);
+
+		const result = await getTorBoxDMMTorrent('user1', 'w1599037');
+		if ('error' in result) throw new Error(result.error);
+
+		expect(getWebDownloadList).toHaveBeenCalledWith('key', { id: 1599037 });
+		expect(getTorrentList).not.toHaveBeenCalled();
+		expect(result.data.meta.id).toBe('dmm-tb:w1599037');
+		expect(result.data.meta.videos[0].streams[0].url).toBe(
+			'https://debridmediamanager.com/api/stremio-tb/user1/play/w1599037:0'
+		);
+	});
+
+	it('rejects an id that is neither a torrent nor a web download', async () => {
+		expect(await getTorBoxDMMTorrent('user1', 'nonsense')).toMatchObject({ status: 400 });
+	});
+});
+
+describe('torboxCastCatalogHelper usenet downloads', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		process.env.DMM_ORIGIN = 'https://debridmediamanager.com';
+		vi.mocked(db.getTorBoxCastProfile).mockResolvedValue({ apiKey: 'key' } as any);
+		vi.mocked(getWebDownloadList).mockResolvedValue({ success: true, data: [] } as any);
+		vi.mocked(getUsenetList).mockResolvedValue({ success: true, data: [] } as any);
+		vi.mocked(getTorrentList).mockResolvedValue({ success: true, data: [] } as any);
+	});
+
+	// Usenet is TorBox's third download table. It shares an id space with neither
+	// of the others, so its entries carry a `u` prefix.
+	it('lists usenet downloads after web downloads and before torrents', async () => {
+		vi.mocked(getWebDownloadList).mockResolvedValue({
+			success: true,
+			data: [{ id: 1, name: 'W' }],
+		} as any);
+		vi.mocked(getUsenetList).mockResolvedValue({
+			success: true,
+			data: [{ id: 2367148, name: 'Big Buck Bunny' }],
+		} as any);
+		vi.mocked(getTorrentList).mockResolvedValue({
+			success: true,
+			data: [{ id: 9, name: 'T' }],
+		} as any);
+
+		const result = await getTorBoxDMMLibrary('user1', 1);
+		if ('error' in result) throw new Error(result.error);
+		expect(result.data.metas.map((m) => m.id)).toEqual([
+			'dmm-tb:w1',
+			'dmm-tb:u2367148',
+			'dmm-tb:9',
+		]);
+	});
+
+	it('reads a u-prefixed meta from the usenet table', async () => {
+		vi.mocked(getUsenetList).mockResolvedValue({
+			success: true,
+			data: [
+				{
+					id: 2367148,
+					name: 'Big Buck Bunny 480p test',
+					files: [{ id: 0, short_name: 'bbb.mov', size: 1024 ** 3 }],
+				},
+			],
+		} as any);
+
+		const result = await getTorBoxDMMTorrent('user1', 'u2367148');
+		if ('error' in result) throw new Error(result.error);
+
+		expect(getUsenetList).toHaveBeenCalledWith('key', { id: 2367148 });
+		expect(getTorrentList).not.toHaveBeenCalled();
+		expect(getWebDownloadList).not.toHaveBeenCalled();
+		expect(result.data.meta.videos[0].streams[0].url).toBe(
+			'https://debridmediamanager.com/api/stremio-tb/user1/play/u2367148:0'
+		);
+	});
+
+	it('still serves the rest when the usenet list fails', async () => {
+		vi.mocked(getUsenetList).mockRejectedValue(new Error('TorBox down'));
+		vi.mocked(getTorrentList).mockResolvedValue({
+			success: true,
+			data: [{ id: 9, name: 'T' }],
+		} as any);
+
+		const result = await getTorBoxDMMLibrary('user1', 1);
+		if ('error' in result) throw new Error(result.error);
+		expect(result.data.metas.map((m) => m.id)).toEqual(['dmm-tb:9']);
 	});
 });
