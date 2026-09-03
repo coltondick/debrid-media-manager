@@ -74,6 +74,39 @@ export class UnifiedRateLimiter {
 			burstSize: 15,
 		});
 
+		// Offcloud is the same posture as Premiumize and for the same reason: 280
+		// requests at up to 96/s drew zero refusals, no `X-RateLimit-*` headers and
+		// no `Retry-After`, and a 5,000-hash cache probe went through in 2.1 s.
+		// That reads as a limiter that is off rather than absent, so this stays
+		// well under what was measured - the library needs one call anyway, and
+		// every request pays a Cloudflare hop (250-370 ms) that makes a burst
+		// expensive without being refused.
+		this.configs.set('offcloud', {
+			maxRequestsPerMinute: 150,
+			maxConcurrent: 3,
+			retryAttempts: 3,
+			backoffMultiplier: 2,
+			jitterRange: 0.2,
+			burstSize: 8,
+		});
+
+		// Debrid-Link is the opposite trade to the two above: the budget is
+		// generous - 280 requests to one endpoint at up to 220/s drew zero
+		// refusals - but the penalty is the harshest of any provider here, a
+		// **one-hour lockout of that endpoint**. So this is not sized against what
+		// the API tolerates; it is sized to never find out. Retries are few for
+		// the same reason: retrying into an hour-long lockout is not resilience,
+		// it is spending requests to be refused again. The client keeps its own
+		// lockout map and short-circuits locally once `floodDetected` fires.
+		this.configs.set('debridlink', {
+			maxRequestsPerMinute: 40,
+			maxConcurrent: 2,
+			retryAttempts: 2,
+			backoffMultiplier: 3,
+			jitterRange: 0.3,
+			burstSize: 5,
+		});
+
 		// Initialize structures for each service
 		for (const service of this.configs.keys()) {
 			this.queues.set(service, []);

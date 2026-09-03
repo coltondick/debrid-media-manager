@@ -29,6 +29,7 @@ const baseResult: SearchResult = {
 	adAvailable: false,
 	tbAvailable: false,
 	pmAvailable: false,
+	ocAvailable: false,
 	files: [{ fileId: 1, filename: 'Sample.mkv', filesize: 1024 * 10 }],
 	noVideos: false,
 	medianFileSize: 10,
@@ -46,6 +47,8 @@ const renderComponent = (override?: Partial<React.ComponentProps<typeof MovieSea
 		adKey: null,
 		torboxKey: null,
 		premiumizeKey: null,
+		offcloudKey: null,
+		debridLinkKey: null,
 		player: '',
 		hashAndProgress: {},
 		handleShowInfo: vi.fn(),
@@ -56,10 +59,14 @@ const renderComponent = (override?: Partial<React.ComponentProps<typeof MovieSea
 		addAd: vi.fn().mockResolvedValue(undefined),
 		addTb: vi.fn().mockResolvedValue(undefined),
 		addPm: vi.fn().mockResolvedValue(undefined),
+		addOc: vi.fn().mockResolvedValue(undefined),
+		addDl: vi.fn().mockResolvedValue(undefined),
 		deleteRd: vi.fn().mockResolvedValue(undefined),
 		deleteAd: vi.fn().mockResolvedValue(undefined),
 		deleteTb: vi.fn().mockResolvedValue(undefined),
 		deletePm: vi.fn().mockResolvedValue(undefined),
+		deleteOc: vi.fn().mockResolvedValue(undefined),
+		deleteDl: vi.fn().mockResolvedValue(undefined),
 		imdbId: 'tt123',
 		isHashServiceChecking: () => false,
 		...override,
@@ -454,6 +461,202 @@ describe('MovieSearchResults', () => {
 			});
 
 			expect(screen.queryByTitle('Watch via Premiumize')).toBeNull();
+		});
+	});
+	describe('Offcloud', () => {
+		it('adds and removes through the Offcloud handlers', async () => {
+			const { props } = renderComponent({
+				offcloudKey: 'oc-key',
+				filteredResults: [{ ...baseResult, ocAvailable: true }],
+			});
+
+			await userEvent.click(screen.getByRole('button', { name: /Instant OC/i }));
+			await waitFor(() => expect(props.addOc).toHaveBeenCalledWith('hash1'));
+		});
+
+		it('offers RM instead of add once the row is in the Offcloud library', async () => {
+			const { props } = renderComponent({
+				offcloudKey: 'oc-key',
+				hashAndProgress: { 'oc:hash1': 100 },
+			});
+
+			expect(screen.queryByRole('button', { name: /DL with OC/i })).toBeNull();
+			await userEvent.click(screen.getByRole('button', { name: /OC \(100%\)/i }));
+			await waitFor(() => expect(props.deleteOc).toHaveBeenCalledWith('hash1'));
+		});
+
+		it('styles the add button with a literal class, never an assembled one', () => {
+			// Tailwind drops `bg-${color}-900/30` from the build silently, so the
+			// three states are written out in full.
+			renderComponent({
+				offcloudKey: 'oc-key',
+				filteredResults: [{ ...baseResult, ocAvailable: true }],
+			});
+
+			const button = screen.getByRole('button', { name: /Instant OC/i });
+			expect(button.className).toContain('border-green-500');
+			expect(button.className).not.toContain('${');
+		});
+
+		it('offers no per-row Offcloud check button', () => {
+			// Page load already probes OC for every row with the same `/cache`
+			// call a per-row button would repeat, so there is nothing left for it
+			// to find - the same reason Premiumize's was removed in d3d6dd49.
+			renderComponent({
+				rdKey: 'rd-key',
+				offcloudKey: 'oc-key',
+				filteredResults: [{ ...baseResult, rdAvailable: false, ocAvailable: false }],
+			});
+
+			expect(screen.queryByRole('button', { name: /Check OC/i })).toBeNull();
+			expect(screen.getByRole('button', { name: /Check RD/i })).toBeTruthy();
+		});
+
+		it('hands the Offcloud key to openWatch for an OC-cached result', async () => {
+			// The render-time and click-time service picks are two separate calls;
+			// leaving the key out of the second silently does nothing on click.
+			openWatchSpy.mockClear();
+			renderComponent({
+				rdKey: null,
+				offcloudKey: 'oc-key',
+				player: 'windows/vlc',
+				filteredResults: [{ ...baseResult, rdAvailable: false, ocAvailable: true }],
+			});
+
+			await userEvent.click(screen.getByTitle('Watch via Offcloud'));
+
+			await waitFor(() => expect(openWatchSpy).toHaveBeenCalledTimes(1));
+			expect(openWatchSpy.mock.calls[0][0]).toMatchObject({
+				service: 'oc',
+				keys: expect.objectContaining({ offcloudKey: 'oc-key' }),
+			});
+		});
+
+		it('offers no watch button when the user has no Offcloud key', () => {
+			renderComponent({
+				rdKey: null,
+				offcloudKey: null,
+				player: 'windows/vlc',
+				filteredResults: [{ ...baseResult, rdAvailable: false, ocAvailable: true }],
+			});
+
+			expect(screen.queryByTitle('Watch via Offcloud')).toBeNull();
+		});
+
+		it('keeps an OC-only cached row when "only cached" is on', () => {
+			renderComponent({
+				onlyShowCached: true,
+				offcloudKey: 'oc-key',
+				filteredResults: [{ ...baseResult, rdAvailable: false, ocAvailable: true }],
+			});
+
+			expect(screen.getByText('Sample Movie')).toBeTruthy();
+		});
+	});
+
+	describe('Debrid-Link', () => {
+		it('offers the add button on a row with no availability flag set anywhere', async () => {
+			// This is the whole Debrid-Link UX: it has no cache probe, so its
+			// button cannot be gated on one and appears on every row. Any other
+			// service's button would be a "check" here.
+			const { props } = renderComponent({
+				debridLinkKey: 'dl-key',
+				filteredResults: [{ ...baseResult }],
+			});
+
+			await userEvent.click(screen.getByRole('button', { name: /Add to DL/i }));
+			await waitFor(() => expect(props.addDl).toHaveBeenCalledWith('hash1'));
+		});
+
+		it('shows no DL badge, pill or check button', () => {
+			// Nothing may claim Debrid-Link knows whether a row is cached, because
+			// nothing can find out without adding it.
+			renderComponent({
+				rdKey: 'rd-key',
+				debridLinkKey: 'dl-key',
+				filteredResults: [{ ...baseResult }],
+			});
+
+			expect(screen.queryByRole('button', { name: /Check DL/i })).toBeNull();
+			expect(screen.queryByRole('button', { name: /Instant DL/i })).toBeNull();
+			expect(screen.getByRole('button', { name: /Check RD/i })).toBeTruthy();
+		});
+
+		it('offers RM instead of add once the row is in the Debrid-Link library', async () => {
+			const { props } = renderComponent({
+				debridLinkKey: 'dl-key',
+				hashAndProgress: { 'dl:hash1': 100 },
+			});
+
+			expect(screen.queryByRole('button', { name: /Add to DL/i })).toBeNull();
+			await userEvent.click(screen.getByRole('button', { name: /DL \(100%\)/i }));
+			await waitFor(() => expect(props.deleteDl).toHaveBeenCalledWith('hash1'));
+		});
+
+		it('styles the add button with a literal class, never an assembled one', () => {
+			// Tailwind drops `bg-${color}` from the build silently.
+			renderComponent({
+				debridLinkKey: 'dl-key',
+				filteredResults: [{ ...baseResult }],
+			});
+
+			const button = screen.getByRole('button', { name: /Add to DL/i });
+			expect(button.className).toContain('border-[#38bdf8]');
+			expect(button.className).not.toContain('${');
+		});
+
+		it('hands the Debrid-Link credential to openWatch for a row in its library', async () => {
+			// `pickWatchService` can never choose 'dl' - there is no flag - so the
+			// watch button is its own, gated on the row being in the account.
+			openWatchSpy.mockClear();
+			renderComponent({
+				rdKey: null,
+				debridLinkKey: 'dl-key',
+				player: 'windows/vlc',
+				hashAndProgress: { 'dl:hash1': 100 },
+			});
+
+			await userEvent.click(screen.getByTitle('Watch via Debrid-Link'));
+
+			await waitFor(() => expect(openWatchSpy).toHaveBeenCalledTimes(1));
+			expect(openWatchSpy.mock.calls[0][0]).toMatchObject({
+				service: 'dl',
+				keys: expect.objectContaining({ debridLinkKey: 'dl-key' }),
+			});
+		});
+
+		it('offers no watch button for a row Debrid-Link does not hold', () => {
+			renderComponent({
+				rdKey: null,
+				debridLinkKey: 'dl-key',
+				player: 'windows/vlc',
+				filteredResults: [{ ...baseResult }],
+			});
+
+			expect(screen.queryByTitle('Watch via Debrid-Link')).toBeNull();
+		});
+
+		it('renders nothing at all without a Debrid-Link credential', () => {
+			renderComponent({
+				debridLinkKey: null,
+				hashAndProgress: { 'dl:hash1': 100 },
+			});
+
+			expect(screen.queryByRole('button', { name: /Add to DL/i })).toBeNull();
+			expect(screen.queryByRole('button', { name: /DL \(100%\)/i })).toBeNull();
+		});
+
+		it('keeps a DL-only row visible when "only cached" is on', () => {
+			// It is in the user's Debrid-Link account, which is the only sense in
+			// which Debrid-Link can say a row is playable.
+			renderComponent({
+				onlyShowCached: true,
+				rdKey: null,
+				debridLinkKey: 'dl-key',
+				hashAndProgress: { 'dl:hash1': 100 },
+			});
+
+			expect(screen.getByText('Sample Movie')).toBeTruthy();
 		});
 	});
 });

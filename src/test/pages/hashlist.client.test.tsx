@@ -29,7 +29,9 @@ vi.mock('@/hooks/auth', () => ({
 	useRealDebridAccessToken: vi.fn(() => [null, false, false]),
 	useAllDebridApiKey: vi.fn(() => null),
 	useTorBoxAccessToken: vi.fn(() => null),
-	usePremiumizeCredential: () => null,
+	usePremiumizeCredential: vi.fn(() => null),
+	useOffcloudApiKey: vi.fn(() => null),
+	useDebridLinkCredential: vi.fn(() => null),
 }));
 
 vi.mock('@/contexts/LibraryCacheContext', () => ({
@@ -121,7 +123,37 @@ describe('HashlistPage', () => {
 		const HashlistPage = (await import('@/pages/hashlist')).default;
 		render(<HashlistPage />);
 
-		expect(screen.getByText('Login to RD/AD/TB/PM to download')).toBeInTheDocument();
+		expect(screen.getByText('Login to RD/AD/TB/PM/OC/DL to download')).toBeInTheDocument();
+	});
+
+	it('offers the Offcloud bulk download once an Offcloud key is present', async () => {
+		const { useOffcloudApiKey } = await import('@/hooks/auth');
+		vi.mocked(useOffcloudApiKey).mockReturnValue('oc-key');
+
+		const HashlistPage = (await import('@/pages/hashlist')).default;
+		render(<HashlistPage />);
+
+		expect(screen.getByText('OC Download (0)')).toBeInTheDocument();
+		expect(
+			screen.queryByText('Login to RD/AD/TB/PM/OC/DL to download')
+		).not.toBeInTheDocument();
+
+		vi.mocked(useOffcloudApiKey).mockReturnValue(null);
+	});
+
+	it('offers the Debrid-Link bulk download once a Debrid-Link credential is present', async () => {
+		const { useDebridLinkCredential } = await import('@/hooks/auth');
+		vi.mocked(useDebridLinkCredential).mockReturnValue('dl-token');
+
+		const HashlistPage = (await import('@/pages/hashlist')).default;
+		render(<HashlistPage />);
+
+		expect(screen.getByText('DL Download (0)')).toBeInTheDocument();
+		expect(
+			screen.queryByText('Login to RD/AD/TB/PM/OC/DL to download')
+		).not.toBeInTheDocument();
+
+		vi.mocked(useDebridLinkCredential).mockReturnValue(null);
 	});
 
 	it('should render pagination controls', async () => {

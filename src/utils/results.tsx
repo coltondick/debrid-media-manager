@@ -32,6 +32,10 @@ export const torrentPrefix = (id: string) =>
 		<span className="bg-[#4f46e5] text-xs text-white">TB</span>
 	) : id.startsWith('pm:') ? (
 		<span className="bg-[#aa0000] text-xs text-white">PM</span>
+	) : id.startsWith('oc:') ? (
+		<span className="bg-[#f97316] text-xs text-black">OC</span>
+	) : id.startsWith('dl:') ? (
+		<span className="bg-[#38bdf8] text-xs text-black">DL</span>
 	) : (
 		<span className="bg-[#fbc730] text-[8px] text-black">AD</span>
 	);
@@ -46,8 +50,25 @@ export const btnIcon = (avail: boolean) =>
 export const btnLabel = (avail: boolean, debridService: string) =>
 	avail ? <b>Instant {debridService}</b> : `DL with ${debridService}`;
 
+/**
+ * Whether any service the user holds can play this row right now.
+ *
+ * **Debrid-Link is deliberately not here, and must not be added.** It publishes
+ * no cache probe at all (`/seedbox/cached` is disabled and nothing replaced it),
+ * so there is no `dlAvailable` to read - a field would have to be permanently
+ * false, which would tell this function, the cached/uncached sorts and the
+ * `is:cached` filter that a Debrid-Link user's playable rows are uncached.
+ * Debrid-Link's add button is offered on every row instead, and the add itself
+ * is the probe.
+ */
 export const isAvailable = (result: SearchResult) =>
-	!!(result.rdAvailable || result.adAvailable || result.tbAvailable || result.pmAvailable);
+	!!(
+		result.rdAvailable ||
+		result.adAvailable ||
+		result.tbAvailable ||
+		result.pmAvailable ||
+		result.ocAvailable
+	);
 
 /**
  * Biggest video file, in MB. Only a debrid availability check knows the per-file

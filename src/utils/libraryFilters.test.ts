@@ -83,6 +83,30 @@ describe('filterLibraryItems', () => {
 		expect(helpText).toBe('Torrents that are no longer cached');
 	});
 
+	it('names Offcloud when filtering by its service tab', () => {
+		const offcloud = createTorrent({ id: 'oc:req-1', title: 'Cloud item', hash: 'h1' });
+		const premiumize = createTorrent({ id: 'pm:t1', title: 'Transfer', hash: 'h2' });
+		const { list, helpText } = filterLibraryItems({
+			torrents: [offcloud, premiumize],
+			service: 'oc',
+		});
+
+		expect(list).toEqual([offcloud]);
+		expect(helpText).toBe('Showing torrents from Offcloud');
+	});
+
+	it('names Debrid-Link when filtering by its service tab', () => {
+		const debridLink = createTorrent({ id: 'dl:seed-1', title: 'Seedbox item', hash: 'h1' });
+		const offcloud = createTorrent({ id: 'oc:req-1', title: 'Cloud item', hash: 'h2' });
+		const { list, helpText } = filterLibraryItems({
+			torrents: [debridLink, offcloud],
+			service: 'dl',
+		});
+
+		expect(list).toEqual([debridLink]);
+		expect(helpText).toBe('Showing torrents from Debrid-Link');
+	});
+
 	it('matches normalized title filters from router params', () => {
 		const target = createTorrent({ id: 'target', title: 'My Movie Title' });
 		const other = createTorrent({ id: 'other', title: 'Another Movie' });

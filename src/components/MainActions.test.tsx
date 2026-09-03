@@ -44,6 +44,8 @@ describe('MainActions', () => {
 				tbUser={null}
 				adUser={false}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -63,6 +65,8 @@ describe('MainActions', () => {
 				tbUser={null}
 				adUser={false}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -78,6 +82,8 @@ describe('MainActions', () => {
 				tbUser={baseTbUser}
 				adUser={false}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -93,6 +99,8 @@ describe('MainActions', () => {
 				tbUser={null}
 				adUser={true}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -108,12 +116,56 @@ describe('MainActions', () => {
 				tbUser={null}
 				adUser={false}
 				pmUser={true}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
 
 		const castLink = screen.getByRole('link', { name: /cast for pm/i });
 		expect(castLink.getAttribute('href')).toBe('/stremio-premiumize');
+	});
+
+	it('shows OC cast action when only OC user is authenticated', () => {
+		render(
+			<MainActions
+				rdUser={null}
+				tbUser={null}
+				adUser={false}
+				pmUser={false}
+				ocUser={true}
+				dlUser={false}
+				isLoading={false}
+			/>
+		);
+
+		const castLink = screen.getByRole('link', { name: /cast for oc/i });
+		expect(castLink.getAttribute('href')).toBe('/stremio-offcloud');
+	});
+
+	// Five buttons used to fall through to `grid-cols-4`, wrapping the fifth
+	// alone into a quarter-width cell. Past four they wrap onto a second line
+	// instead: 3+2 for five, 3+3 for six.
+	it.each([
+		[{ pmUser: false, ocUser: false, dlUser: false }, 'grid-cols-3'],
+		[{ pmUser: true, ocUser: false, dlUser: false }, 'grid-cols-4'],
+		[{ pmUser: true, ocUser: true, dlUser: false }, 'grid-cols-3'],
+		[{ pmUser: true, ocUser: true, dlUser: true }, 'grid-cols-3'],
+	])('lays the cast row out as %o -> %s', (flags, expected) => {
+		const { container } = render(
+			<MainActions
+				rdUser={baseRdUser}
+				tbUser={baseTbUser}
+				adUser={true}
+				pmUser={flags.pmUser}
+				ocUser={flags.ocUser}
+				dlUser={flags.dlUser}
+				isLoading={false}
+			/>
+		);
+
+		const row = container.querySelector('a[href="/stremio"]')?.parentElement;
+		expect(row?.className).toContain(expected);
 	});
 
 	it('shows both RD and TB cast actions when both users are authenticated', () => {
@@ -123,6 +175,8 @@ describe('MainActions', () => {
 				tbUser={baseTbUser}
 				adUser={false}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -140,6 +194,8 @@ describe('MainActions', () => {
 				tbUser={baseTbUser}
 				adUser={true}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -159,6 +215,8 @@ describe('MainActions', () => {
 				tbUser={null}
 				adUser={false}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -176,6 +234,8 @@ describe('MainActions', () => {
 				tbUser={null}
 				adUser={false}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -191,6 +251,8 @@ describe('MainActions', () => {
 				tbUser={baseTbUser}
 				adUser={false}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -209,6 +271,8 @@ describe('MainActions', () => {
 				tbUser={baseTbUser}
 				adUser={false}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -220,15 +284,92 @@ describe('MainActions', () => {
 	});
 
 	it('shows the request board to an AllDebrid user', () => {
-		render(<MainActions rdUser={null} tbUser={null} adUser pmUser={false} isLoading={false} />);
+		render(
+			<MainActions
+				rdUser={null}
+				tbUser={null}
+				adUser
+				pmUser={false}
+				ocUser={false}
+				dlUser={false}
+				isLoading={false}
+			/>
+		);
 		expect(screen.getByRole('link', { name: /requests/i })).not.toBeNull();
 	});
 
 	it('hides the request board from a Premiumize-only user, who has nothing to fulfil with', () => {
 		// The uploader cannot source a transfer from Premiumize, so a Premiumize
 		// user is not sent to the board at all.
-		render(<MainActions rdUser={null} tbUser={null} adUser={false} pmUser isLoading={false} />);
+		render(
+			<MainActions
+				rdUser={null}
+				tbUser={null}
+				adUser={false}
+				pmUser
+				ocUser={false}
+				dlUser={false}
+				isLoading={false}
+			/>
+		);
 		expect(screen.queryByRole('link', { name: /requests/i })).toBeNull();
+	});
+
+	it('hides the request board from an Offcloud-only user, who has nothing to fulfil with', () => {
+		// Offcloud reaches this component only to draw its cast button. Like
+		// Premiumize, the uploader cannot source a transfer from it, so the
+		// board's row stays gated on rd/tb/ad and an Offcloud-only login never
+		// sees it - while still getting its Cast link.
+		render(
+			<MainActions
+				rdUser={null}
+				tbUser={null}
+				adUser={false}
+				pmUser={false}
+				ocUser={true}
+				dlUser={false}
+				isLoading={false}
+			/>
+		);
+
+		expect(screen.queryByRole('link', { name: /requests/i })).toBeNull();
+		expect(screen.getByRole('link', { name: /cast for oc/i })).not.toBeNull();
+	});
+
+	it('shows DL cast action when only DL user is authenticated', () => {
+		render(
+			<MainActions
+				rdUser={null}
+				tbUser={null}
+				adUser={false}
+				pmUser={false}
+				ocUser={false}
+				dlUser={true}
+				isLoading={false}
+			/>
+		);
+
+		const castLink = screen.getByRole('link', { name: /cast for dl/i });
+		expect(castLink.getAttribute('href')).toBe('/stremio-debridlink');
+	});
+
+	it('hides the request board from a Debrid-Link-only user, who has nothing to fulfil with', () => {
+		// Debrid-Link reaches this component only to draw its cast button. Like
+		// Premiumize and Offcloud, the uploader cannot source a transfer from it.
+		render(
+			<MainActions
+				rdUser={null}
+				tbUser={null}
+				adUser={false}
+				pmUser={false}
+				ocUser={false}
+				dlUser={true}
+				isLoading={false}
+			/>
+		);
+
+		expect(screen.queryByRole('link', { name: /requests/i })).toBeNull();
+		expect(screen.getByRole('link', { name: /cast for dl/i })).not.toBeNull();
 	});
 
 	it('hides the request board from a Real-Debrid-only user, who asks from the search result instead', () => {
@@ -238,6 +379,8 @@ describe('MainActions', () => {
 				tbUser={null}
 				adUser={false}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);
@@ -252,6 +395,8 @@ describe('MainActions', () => {
 				tbUser={baseTbUser}
 				adUser={false}
 				pmUser={false}
+				ocUser={false}
+				dlUser={false}
 				isLoading={false}
 			/>
 		);

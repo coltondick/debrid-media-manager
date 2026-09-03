@@ -6,6 +6,8 @@ import UsenetResults from '@/components/UsenetResults';
 import { useLibraryCache } from '@/contexts/LibraryCacheContext';
 import {
 	useAllDebridApiKey,
+	useDebridLinkCredential,
+	useOffcloudApiKey,
 	usePremiumizeCredential,
 	useRealDebridAccessToken,
 	useTorBoxAccessToken,
@@ -18,18 +20,25 @@ import { SearchApiResponse, SearchResult, hasSubstantialTitle } from '@/services
 import UserTorrentDB from '@/torrent/db';
 import { handleCastMovieAllDebrid } from '@/utils/allDebridCastApiClient';
 import axiosWithRetry from '@/utils/axiosWithRetry';
-import { getLocalStorageBoolean, getLocalStorageItemOrDefault } from '@/utils/browserStorage';
+import {
+	getLocalStorageBoolean,
+	getLocalStorageItemOrDefault,
+	hideRdBlockedTorrentsDefault,
+} from '@/utils/browserStorage';
 import { handleCastMovie } from '@/utils/castApiClient';
 import { fileContentRequest } from '@/utils/contentRequestsApi';
 import { handleCopyOrDownloadMagnet } from '@/utils/copyMagnet';
+import { handleCastMovieDebridLink } from '@/utils/debridLinkCastApiClient';
 import { markTransferredHashes } from '@/utils/debridUploader';
 import {
+	checkAvailabilityOc,
 	checkAvailabilityPm,
 	checkDatabaseAvailabilityAd,
 	checkDatabaseAvailabilityRd,
 	checkDatabaseAvailabilityTb,
 } from '@/utils/instantChecks';
 import { formatReleaseDate } from '@/utils/movieReleaseDates';
+import { handleCastMovieOffcloud } from '@/utils/offcloudCastApiClient';
 import { handleCastMoviePremiumize } from '@/utils/premiumizeCastApiClient';
 import { quickSearch } from '@/utils/quickSearch';
 import { isRdBlockedFilename } from '@/utils/rdFilenameFilter';
@@ -130,15 +139,7 @@ const MovieSearch: FunctionComponent = () => {
 	const player = getLocalStorageItemOrDefault('settings:player', defaultPlayer);
 	const movieMaxSize = getLocalStorageItemOrDefault('settings:movieMaxSize', defaultMovieSize);
 	const onlyTrustedTorrents = getLocalStorageBoolean('settings:onlyTrustedTorrents', false);
-	const hideRdBlockedTorrents = (() => {
-		if (typeof localStorage === 'undefined') return false;
-		const stored = localStorage.getItem('settings:hideRdBlockedTorrents');
-		if (stored !== null) return stored === 'true';
-		const hasRd = !!localStorage.getItem('rd:accessToken');
-		const hasAd = !!localStorage.getItem('ad:apiKey');
-		const hasTb = !!localStorage.getItem('tb:apiKey');
-		return hasRd && !hasAd && !hasTb;
-	})();
+	const hideRdBlockedTorrents = hideRdBlockedTorrentsDefault(false);
 	const defaultTorrentsFilter = getLocalStorageItemOrDefault(
 		'settings:defaultTorrentsFilter',
 		defaultFilterSetting
@@ -167,6 +168,7 @@ const MovieSearch: FunctionComponent = () => {
 		adAvailableCount?: number;
 		tbAvailableCount?: number;
 		pmAvailableCount?: number;
+		ocAvailableCount?: number;
 		allSourcesCompleted: boolean;
 		pendingAvailabilityChecks: number;
 		isAvailabilityOnly?: boolean;
@@ -177,6 +179,11 @@ const MovieSearch: FunctionComponent = () => {
 	const adKey = useAllDebridApiKey();
 	const torboxKey = useTorBoxAccessToken();
 	const premiumizeKey = usePremiumizeCredential();
+	const offcloudKey = useOffcloudApiKey();
+	// Debrid-Link joins the add buttons and nothing else: it has no cache probe,
+	// so it takes no part in the availability sweep, the cached/uncached counts
+	// or the `is:` filters.
+	const debridLinkKey = useDebridLinkCredential();
 
 	/**
 	 * A user holding only Real-Debrid cannot start a transfer at all: the uploader
@@ -236,16 +243,22 @@ const MovieSearch: FunctionComponent = () => {
 		addAd,
 		addTb,
 		addPm,
+		addOc,
+		addDl,
 		sendTbToRd,
 		deleteRd,
 		deleteAd,
 		deleteTb,
 		deletePm,
+		deleteOc,
+		deleteDl,
 	} = useTorrentManagement(
 		rdKey,
 		adKey,
 		torboxKey,
 		premiumizeKey,
+		offcloudKey,
+		debridLinkKey,
 		imdbid as string,
 		searchResults,
 		setSearchResults
@@ -267,6 +280,7 @@ const MovieSearch: FunctionComponent = () => {
 		adKey,
 		torboxKey,
 		premiumizeKey,
+		offcloudKey,
 		imdbid as string,
 		searchResults,
 		setSearchResults,
@@ -345,6 +359,7 @@ const MovieSearch: FunctionComponent = () => {
 					!r.adAvailable &&
 					!r.tbAvailable &&
 					!r.pmAvailable &&
+					!r.ocAvailable &&
 					!r.trackerStats
 			);
 
@@ -440,6 +455,7 @@ const MovieSearch: FunctionComponent = () => {
 		let adAvailableCount = 0;
 		let tbAvailableCount = 0;
 		let pmAvailableCount = 0;
+		let ocAvailableCount = 0;
 		let pendingAvailabilityChecks = 0;
 		let allSourcesCompleted = false;
 		let finalResultCount = 0;
@@ -455,11 +471,16 @@ const MovieSearch: FunctionComponent = () => {
 			setSearchCompleteInfo({
 				finalResults: finalResultCount,
 				totalAvailableCount:
-					rdAvailableCount + adAvailableCount + tbAvailableCount + pmAvailableCount,
+					rdAvailableCount +
+					adAvailableCount +
+					tbAvailableCount +
+					pmAvailableCount +
+					ocAvailableCount,
 				rdAvailableCount,
 				adAvailableCount,
 				tbAvailableCount,
 				pmAvailableCount,
+				ocAvailableCount,
 				allSourcesCompleted: true,
 				pendingAvailabilityChecks: 0,
 			});
@@ -511,7 +532,11 @@ const MovieSearch: FunctionComponent = () => {
 					hashesToCheck = newUniqueResults
 						.filter(
 							(r) =>
-								!r.rdAvailable && !r.adAvailable && !r.tbAvailable && !r.pmAvailable
+								!r.rdAvailable &&
+								!r.adAvailable &&
+								!r.tbAvailable &&
+								!r.pmAvailable &&
+								!r.ocAvailable
 						)
 						.map((r) => r.hash);
 
@@ -572,6 +597,24 @@ const MovieSearch: FunctionComponent = () => {
 						sortByBiggest
 					).then((count) => {
 						pmAvailableCount += count;
+						pendingAvailabilityChecks--;
+						checkAndShowFinalToast();
+					});
+				}
+
+				if (offcloudKey) {
+					pendingAvailabilityChecks++;
+					// One batch POST, nothing added to the account. Offcloud serves
+					// Premiumize's cache, so this and the check above almost always
+					// agree - they stay two requests because the keys, the accounts
+					// and the outages are separate.
+					checkAvailabilityOc(
+						offcloudKey,
+						hashesToCheck,
+						setSearchResults,
+						sortByBiggest
+					).then((count) => {
+						ocAvailableCount += count;
 						pendingAvailabilityChecks--;
 						checkAndShowFinalToast();
 					});
@@ -642,6 +685,7 @@ const MovieSearch: FunctionComponent = () => {
 				adAvailable: false,
 				tbAvailable: false,
 				pmAvailable: false,
+				ocAvailable: false,
 				noVideos: false,
 				files: r.files || [],
 			}));
@@ -689,7 +733,12 @@ const MovieSearch: FunctionComponent = () => {
 
 	const totalUncachedCount = useMemo(() => {
 		return filteredResults.filter(
-			(r) => !r.rdAvailable && !r.adAvailable && !r.tbAvailable && !r.pmAvailable
+			(r) =>
+				!r.rdAvailable &&
+				!r.adAvailable &&
+				!r.tbAvailable &&
+				!r.pmAvailable &&
+				!r.ocAvailable
 		).length;
 	}, [filteredResults]);
 
@@ -721,6 +770,7 @@ const MovieSearch: FunctionComponent = () => {
 			adAvailableCount,
 			tbAvailableCount,
 			pmAvailableCount,
+			ocAvailableCount,
 			allSourcesCompleted,
 			pendingAvailabilityChecks,
 			isAvailabilityOnly,
@@ -747,6 +797,8 @@ const MovieSearch: FunctionComponent = () => {
 				servicesWithCache.push(`TB: ${tbAvailableCount}`);
 			if (premiumizeKey && (pmAvailableCount ?? 0) > 0)
 				servicesWithCache.push(`PM: ${pmAvailableCount}`);
+			if (offcloudKey && (ocAvailableCount ?? 0) > 0)
+				servicesWithCache.push(`OC: ${ocAvailableCount}`);
 
 			// Show toast for cached torrents if any found
 			if (totalAvailableCount > 0) {
@@ -766,6 +818,7 @@ const MovieSearch: FunctionComponent = () => {
 		adKey,
 		torboxKey,
 		premiumizeKey,
+		offcloudKey,
 		isAnyChecking,
 		isLibrarySyncing,
 		checkServiceAvailabilityBulk,
@@ -837,21 +890,68 @@ const MovieSearch: FunctionComponent = () => {
 		window.open(getStremioDetailUrl(imdbid as string));
 	}
 
+	async function handleCastDebridLink(hash: string) {
+		await toast.promise(
+			// Debrid-Link has no cache probe, so the cast is the probe: the server
+			// adds the full magnet with this member's own credential, which comes
+			// back complete in one request for cached content and starts a real
+			// download - one of the day's 50 torrents - otherwise.
+			handleCastMovieDebridLink(imdbid as string, debridLinkKey!, hash),
+			{
+				loading: 'Starting Debrid-Link cast in Stremio...',
+				success: 'Cast started in Stremio',
+				error: 'Debrid-Link cast failed in Stremio',
+			},
+			castToastOptions
+		);
+		window.open(getStremioDetailUrl(imdbid as string));
+	}
+
+	async function handleCastOffcloud(hash: string) {
+		await toast.promise(
+			handleCastMovieOffcloud(imdbid as string, offcloudKey!, hash),
+			{
+				loading: 'Starting Offcloud cast in Stremio...',
+				success: 'Cast started in Stremio',
+				error: 'Offcloud cast failed in Stremio',
+			},
+			castToastOptions
+		);
+		window.open(getStremioDetailUrl(imdbid as string));
+	}
+
 	const getFirstAvailableRdTorrent = () => {
 		return filteredResults.find((r) => r.rdAvailable && !r.noVideos);
 	};
 
 	// Unlike "Instant RD" and "Cast (RD)", Watch works with whichever service has
 	// the torrent cached, so it gets its own pick rather than reusing the RD one.
+	//
+	// **Every key the user holds, every time.** `pickWatchService` answers from the
+	// keys it is handed, so a partial set does not degrade gracefully - it silently
+	// reports "nothing is watchable" for a service that holds the release, and this
+	// button goes dead for anyone signed in only to the omitted one. Handing it
+	// three of the six is what made Watch-first dead for Premiumize users, and it
+	// would have shipped dead for Offcloud too. Debrid-Link is deliberately absent
+	// from the *answer* (it publishes no cache probe, so `pickWatchService` can
+	// never return `'dl'`), but its key still travels so `openWatch` can redeem a
+	// pick made anywhere else.
+	const watchKeys = {
+		rdKey,
+		adKey,
+		torboxKey,
+		premiumizeKey,
+		offcloudKey,
+		debridLinkKey,
+	};
+
 	const getFirstWatchableTorrent = () =>
-		filteredResults.find(
-			(r) => !r.noVideos && pickWatchService(r, { rdKey, adKey, torboxKey }) !== null
-		);
+		filteredResults.find((r) => !r.noVideos && pickWatchService(r, watchKeys) !== null);
 
 	const handleWatchFirst = async () => {
 		const result = getFirstWatchableTorrent();
 		if (!result) return;
-		const service = pickWatchService(result, { rdKey, adKey, torboxKey });
+		const service = pickWatchService(result, watchKeys);
 		if (!service) return;
 		const biggest = getBiggestVideoFile(result);
 		setIsWatching(true);
@@ -860,7 +960,7 @@ const MovieSearch: FunctionComponent = () => {
 				service,
 				player,
 				hash: result.hash,
-				keys: { rdKey, adKey, torboxKey },
+				keys: watchKeys,
 				fileName: biggest?.filename,
 				fileId: biggest?.fileId,
 				adInLibrary: `ad:${result.hash}` in hashAndProgress,
@@ -873,7 +973,7 @@ const MovieSearch: FunctionComponent = () => {
 	const handleActionButtons = () => {
 		const firstWatchable = getFirstWatchableTorrent();
 		const watchableService = firstWatchable
-			? pickWatchService(firstWatchable, { rdKey, adKey, torboxKey })
+			? pickWatchService(firstWatchable, watchKeys)
 			: null;
 		return (
 			<>
@@ -1046,7 +1146,12 @@ const MovieSearch: FunctionComponent = () => {
 				onQueryChange={setQuery}
 				filteredCount={
 					filteredResults.filter(
-						(r) => r.rdAvailable || r.adAvailable || r.tbAvailable || r.pmAvailable
+						(r) =>
+							r.rdAvailable ||
+							r.adAvailable ||
+							r.tbAvailable ||
+							r.pmAvailable ||
+							r.ocAvailable
 					).length
 				}
 				totalCount={filteredResults.length}
@@ -1055,6 +1160,7 @@ const MovieSearch: FunctionComponent = () => {
 				adKey={adKey}
 				torboxKey={torboxKey}
 				premiumizeKey={premiumizeKey}
+				offcloudKey={offcloudKey}
 				onMassReport={(type) => handleMassReport(type, filteredResults)}
 				mediaType="movie"
 				title={movieInfo.title}
@@ -1085,6 +1191,8 @@ const MovieSearch: FunctionComponent = () => {
 						adKey={adKey}
 						torboxKey={torboxKey}
 						premiumizeKey={premiumizeKey}
+						offcloudKey={offcloudKey}
+						debridLinkKey={debridLinkKey}
 						player={player}
 						hashAndProgress={hashAndProgress}
 						handleShowInfo={handleShowInfo}
@@ -1092,6 +1200,8 @@ const MovieSearch: FunctionComponent = () => {
 						handleCastTorBox={torboxKey ? handleCastTorBox : undefined}
 						handleCastAllDebrid={adKey ? handleCastAllDebrid : undefined}
 						handleCastPremiumize={premiumizeKey ? handleCastPremiumize : undefined}
+						handleCastOffcloud={offcloudKey ? handleCastOffcloud : undefined}
+						handleCastDebridLink={debridLinkKey ? handleCastDebridLink : undefined}
 						handleCopyMagnet={(hash) =>
 							handleCopyOrDownloadMagnet(hash, shouldDownloadMagnets)
 						}
@@ -1100,12 +1210,16 @@ const MovieSearch: FunctionComponent = () => {
 						addAd={addAd}
 						addTb={addTb}
 						addPm={addPm}
+						addOc={addOc}
+						addDl={addDl}
 						sendTbToRd={sendTbToRd}
 						requestContent={canRequest ? handleRequestContent : undefined}
 						deleteRd={deleteRd}
 						deleteAd={deleteAd}
 						deleteTb={deleteTb}
 						deletePm={deletePm}
+						deleteOc={deleteOc}
+						deleteDl={deleteDl}
 						imdbId={imdbid as string}
 						isHashServiceChecking={isHashServiceChecking}
 					/>

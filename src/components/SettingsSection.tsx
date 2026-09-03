@@ -8,6 +8,7 @@ import {
 	getLocalStorageBoolean,
 	getLocalStorageItemOrDefault,
 	getLocalStorageString,
+	hideRdBlockedTorrentsDefault,
 } from '../utils/browserStorage';
 import {
 	defaultAvailabilityCheckLimit,
@@ -117,17 +118,9 @@ export const SettingsSection = () => {
 	const [hideCastOption, setHideCastOption] = useState(() =>
 		getLocalStorageBoolean('settings:hideCastOption', false)
 	);
-	const [hideRdBlockedTorrents, setHideRdBlockedTorrents] = useState(() => {
-		if (typeof localStorage === 'undefined') return defaultHideRdBlockedTorrents;
-		const stored = localStorage.getItem('settings:hideRdBlockedTorrents');
-		if (stored !== null) return stored === 'true';
-		const hasRd = !!localStorage.getItem('rd:accessToken');
-		const hasAd = !!localStorage.getItem('ad:apiKey');
-		const hasTb = !!localStorage.getItem('tb:apiKey');
-		const hasPm =
-			!!localStorage.getItem('pm:accessToken') || !!localStorage.getItem('pm:apiKey');
-		return hasRd && !hasAd && !hasTb && !hasPm;
-	});
+	const [hideRdBlockedTorrents, setHideRdBlockedTorrents] = useState(() =>
+		hideRdBlockedTorrentsDefault(defaultHideRdBlockedTorrents)
+	);
 
 	const handlePlayerChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
 		const value = e.target.value;

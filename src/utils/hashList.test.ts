@@ -92,6 +92,70 @@ describe('hashList utils', () => {
 			);
 		});
 
+		it('leaves out an Offcloud row created from a plain HTTP URL', async () => {
+			// Offcloud is a remote-download service too: a `/cloud` submission of an
+			// ordinary http URL has no info hash anywhere in it, and `originalLink`
+			// carries a URL rather than a magnet or `<hash>.torrent`.
+			const offcloudDirectDownload: UserTorrent = {
+				...mockTorrent,
+				id: 'oc:68b7f0c1e4b0a1',
+				filename: 'some-file.mkv',
+				hash: '',
+			};
+			vi.mocked(lzString.compressToEncodedURIComponent).mockReturnValue('compressed-data');
+			vi.mocked(createShortUrl).mockResolvedValue('https://short.url/abc123');
+
+			await generateHashList('Mixed', [mockTorrent, offcloudDirectDownload]);
+
+			expect(lzString.compressToEncodedURIComponent).toHaveBeenCalledWith(
+				JSON.stringify({
+					title: 'Mixed',
+					torrents: [
+						{
+							filename: mockTorrent.filename,
+							hash: mockTorrent.hash,
+							bytes: mockTorrent.bytes,
+						},
+					],
+				})
+			);
+		});
+
+		it('shares a Debrid-Link row, which always carries a hash', async () => {
+			// `hashString` rides on every seedbox row Debrid-Link returns, so
+			// unlike Premiumize and Offcloud there is no hashless case here and no
+			// guard was added for one. This is the test that says so.
+			const debridLinkRow: UserTorrent = {
+				...mockTorrent,
+				id: 'dl:seed-1',
+				filename: 'Big Buck Bunny',
+				hash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c',
+				bytes: 276_134_947,
+			};
+			vi.mocked(lzString.compressToEncodedURIComponent).mockReturnValue('compressed-data');
+			vi.mocked(createShortUrl).mockResolvedValue('https://short.url/abc123');
+
+			await generateHashList('Mixed', [mockTorrent, debridLinkRow]);
+
+			expect(lzString.compressToEncodedURIComponent).toHaveBeenCalledWith(
+				JSON.stringify({
+					title: 'Mixed',
+					torrents: [
+						{
+							filename: mockTorrent.filename,
+							hash: mockTorrent.hash,
+							bytes: mockTorrent.bytes,
+						},
+						{
+							filename: debridLinkRow.filename,
+							hash: debridLinkRow.hash,
+							bytes: debridLinkRow.bytes,
+						},
+					],
+				})
+			);
+		});
+
 		it('should generate hash list successfully', async () => {
 			const title = 'Test Collection';
 			const filteredList = [mockTorrent];

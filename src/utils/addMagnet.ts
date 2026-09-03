@@ -10,6 +10,18 @@ import {
 	uploadMagnetAd,
 } from '@/services/allDebrid';
 import {
+	addSeedboxTorrent,
+	DebridLinkError,
+	isDlFinished,
+	toMagnetUri as toDlMagnetUri,
+} from '@/services/debridLink';
+import {
+	addOffcloudCloud,
+	isValidBtih,
+	OffcloudError,
+	toMagnetUri as toOffcloudMagnetUri,
+} from '@/services/offcloud';
+import {
 	createPremiumizeTransfer,
 	listPremiumizeFolder,
 	listPremiumizeTransfers,
@@ -41,6 +53,8 @@ import { isRdBlockedName } from './deInfringe';
 import { handleDeleteRdTorrent } from './deleteTorrent';
 import {
 	buildPremiumizeRowSources,
+	convertToDlUserTorrent,
+	convertToOffcloudUserTorrent,
 	convertToPremiumizeUserTorrent,
 	convertToTbUserTorrent,
 	convertToTbWebDownloadUserTorrent,
@@ -878,4 +892,265 @@ export const handleAddMultipleHashesInPm = async (
 		`Added ${success} ${success === 1 ? 'hash' : 'hashes'} to Premiumize.`,
 		magnetToastOptions
 	);
+};
+
+const OC_BATCH_MAGNET_DELAY = process.env.VITEST_WORKER_ID ? 0 : 250;
+
+/**
+ * Adds a magnet to Offcloud's cloud.
+ *
+ * Two measured behaviours shape this (`docs/providers/offcloud.md`):
+ *
+ *  - **A garbage magnet is accepted.** `magnet:?xt=urn:btih:zzzz` comes back
+ *    `200` with a requestId and then sits in `created` / "Loading..."
+ *    indefinitely - nothing upstream ever refuses it and nothing ever finishes
+ *    it. `isValidBtih` is checked here so the user gets a sentence rather than a
+ *    zombie row they then have to remove.
+ *  - **A cached magnet finishes inside the add response**, `status:
+ *    "downloaded"` synchronously, Premiumize-style. So the toast can tell the
+ *    user whether they can play it now or have to wait, without a poll.
+ *
+ * Idempotent while the item lives: re-submitting the same magnet returns the
+ * same `requestId` and creates nothing, so a double click is harmless. After a
+ * removal the same magnet gets a new id.
+ */
+export const handleAddAsMagnetInOc = async (
+	ocKey: string,
+	hash: string,
+	callback?: (torrent: UserTorrent) => Promise<void>,
+	silent: boolean = false
+) => {
+	if (!isValidBtih(hash)) {
+		// Refused before the request, not after: Offcloud would take it.
+		if (!silent) toast.error('That is not a valid info hash.', magnetToastOptions);
+		throw new OffcloudError(`"${hash}" is not a valid info hash.`, 'invalid_info_hash');
+	}
+
+	try {
+		// Always the full magnet form. `/cloud` accepts a bare hash from us only
+		// because we build the magnet here; its `/cache/info` sibling silently
+		// reports cached content as uncached when handed a bare hash, so the
+		// magnet form is the house rule for every Offcloud call that takes a url.
+		const added = await addOffcloudCloud(ocKey, toOffcloudMagnetUri(hash));
+		if (!added.requestId) {
+			if (!silent) toast.error('Offcloud added it without an ID.', magnetToastOptions);
+			return;
+		}
+
+		// The hash is known here - it is what was just submitted - so the row is
+		// built with it rather than re-derived from Offcloud's rewritten
+		// `originalLink`.
+		if (callback) await callback(convertToOffcloudUserTorrent(added, hash));
+
+		if (!silent) {
+			toast.success(
+				added.status === 'downloaded'
+					? 'Cached on Offcloud — ready to play.'
+					: 'Added to Offcloud — downloading.',
+				magnetToastOptions
+			);
+		}
+	} catch (error) {
+		console.error(
+			'Error adding magnet to Offcloud:',
+			error instanceof Error ? error.message : 'Unknown error'
+		);
+		if (!silent) {
+			const message = error instanceof OffcloudError ? error.message : null;
+			toast.error(
+				message ? `Offcloud error: ${message}` : 'Failed to add to Offcloud.',
+				magnetToastOptions
+			);
+		}
+		throw error;
+	}
+};
+
+export const handleAddMultipleHashesInOc = async (
+	ocKey: string,
+	hashes: string[],
+	callback?: () => Promise<void>
+) => {
+	let success = 0;
+	for (let i = 0; i < hashes.length; i++) {
+		if (i > 0) await delay(OC_BATCH_MAGNET_DELAY);
+		try {
+			await handleAddAsMagnetInOc(ocKey, hashes[i], undefined, true);
+			success++;
+		} catch (error) {
+			console.error(
+				'Error adding hash in Offcloud:',
+				error instanceof Error ? error.message : 'Unknown error'
+			);
+		}
+	}
+	if (callback) await callback();
+	toast(`Added ${success} ${success === 1 ? 'hash' : 'hashes'} to Offcloud.`, magnetToastOptions);
+};
+
+const DL_BATCH_MAGNET_DELAY = process.env.VITEST_WORKER_ID ? 0 : 250;
+
+/**
+ * Debrid-Link's refusals, in the words a user can act on.
+ *
+ * The vendor publishes a 40-code taxonomy and these are the ones a search-page
+ * add can actually hit. Each is a *different* action on the user's part - wait
+ * for tomorrow's reset, free an active slot, pick a smaller release - so
+ * collapsing them into "failed to add" throws away the only useful part of the
+ * answer. The numbers come from `/seedbox/limits` on a premium account
+ * (`docs/providers/debrid-link.md` §4).
+ */
+const DL_ERROR_MESSAGES: Record<string, string> = {
+	maxTorrent: 'Daily Debrid-Link torrent quota (50) reached — try again after the daily reset.',
+	maxData: "Debrid-Link's daily data quota is used up — try again after the daily reset.",
+	torrentTooBig: 'Too big for Debrid-Link — its limit is 1 TiB per torrent.',
+	maxTransfer: "Debrid-Link's 20 active transfers are full — wait for one to finish.",
+	badTorrentFile: 'Debrid-Link could not read that magnet.',
+	// Only a bare-hash add can answer this, which is the hash-list path: a bare
+	// hash is accepted only when the content is already cached. The search page
+	// sends the full magnet and never sees it.
+	notAddTorrent: 'Not cached on Debrid-Link.',
+	badToken: 'Debrid-Link sign-in expired — sign in again.',
+	serverNotAllowed:
+		'Debrid-Link refuses this network — its account gate blocks VPNs and servers.',
+};
+
+const dlErrorMessage = (error: unknown): string | null => {
+	if (!(error instanceof DebridLinkError)) return null;
+	if (error.code === 'floodDetected') {
+		// The lockout is an hour long and applies to the endpoint, so telling the
+		// user "try again" without a number invites them to spend the hour
+		// finding out. The client tracks the remainder locally and answers
+		// without a request once it knows.
+		const minutes = error.retryAfterMs ? Math.ceil(error.retryAfterMs / 60_000) : 0;
+		return minutes > 0
+			? `Debrid-Link rate-limited this action — locked for about ${minutes} more minute${minutes === 1 ? '' : 's'}.`
+			: 'Debrid-Link rate-limited this action — locked for an hour.';
+	}
+	return DL_ERROR_MESSAGES[error.code] ?? error.message ?? null;
+};
+
+/**
+ * Adds a magnet to the user's Debrid-Link seedbox.
+ *
+ * **The full magnet, never the bare hash.** Debrid-Link accepts both, but a bare
+ * hash is only accepted when the content is already cached — that is the whole
+ * of its cache probe now that `/seedbox/cached` is disabled. On a search page
+ * the button means "add this", so a magnet is what gets sent and an uncached
+ * release downloads for real. `handleAddMultipleHashesInDl` is the one place
+ * that wants the other behaviour.
+ *
+ * The response tells the whole story on its own: cached content comes back
+ * synchronously complete (`status: 100`, live URLs, ~150 ms), so the toast can
+ * say "ready" or "downloading" without a single poll.
+ *
+ * **A double click is harmless and there is no dedup code on purpose.** The add
+ * is idempotent by hash and the torrent id is stable — a duplicate add, a bare
+ * hash add and even a re-add after removal all return the same id — so a second
+ * click costs one request and changes nothing.
+ */
+export const handleAddAsMagnetInDl = async (
+	dlKey: string,
+	hash: string,
+	callback?: (torrent: UserTorrent) => Promise<void>,
+	silent: boolean = false
+) => {
+	try {
+		const torrent = await addSeedboxTorrent(dlKey, toDlMagnetUri(hash));
+		if (!torrent?.id) {
+			if (!silent) toast.error('Debrid-Link added it without an ID.', magnetToastOptions);
+			return;
+		}
+
+		if (callback) await callback(convertToDlUserTorrent(torrent, hash));
+
+		if (!silent) {
+			toast.success(
+				// `>=`, never `=== 100`: the lower states are flags that combine,
+				// and the vendor's own sample carries `status: 6`.
+				isDlFinished(torrent.status)
+					? 'Cached on Debrid-Link — ready to play.'
+					: 'Added to Debrid-Link — downloading.',
+				magnetToastOptions
+			);
+		}
+	} catch (error) {
+		console.error(
+			'Error adding magnet to Debrid-Link:',
+			error instanceof Error ? error.message : 'Unknown error'
+		);
+		if (!silent) {
+			const message = dlErrorMessage(error);
+			toast.error(message ?? 'Failed to add to Debrid-Link.', magnetToastOptions);
+		}
+		throw error;
+	}
+};
+
+/**
+ * Adds many hashes to Debrid-Link, **as bare hashes**.
+ *
+ * This is the one surface where "only land it if it is already cached" is the
+ * right semantics. A hash list is hundreds of rows and the account's whole day
+ * is 50 torrents, so sending magnets here would let one click start fifty real
+ * downloads and exhaust the quota — the search page's per-row button is where a
+ * user asks for that, one release at a time and knowingly.
+ *
+ * A miss answers `notAddTorrent` and costs nothing, so misses are counted into
+ * the summary rather than toasted one by one. Two codes stop the sweep instead
+ * of being counted: `maxTorrent` means every remaining add would be refused for
+ * the rest of the day, and `floodDetected` means Debrid-Link has locked the
+ * endpoint for an hour — carrying on either way is spending requests to collect
+ * the same refusal.
+ */
+export const handleAddMultipleHashesInDl = async (
+	dlKey: string,
+	hashes: string[],
+	callback?: () => Promise<void>
+) => {
+	let success = 0;
+	let notCached = 0;
+	let refused = 0;
+	let abortedBy: string | null = null;
+
+	for (let i = 0; i < hashes.length; i++) {
+		if (i > 0) await delay(DL_BATCH_MAGNET_DELAY);
+		try {
+			// A bare hash, deliberately - see above. `toMagnetUri` is not used
+			// here, and this is the only caller that must not use it.
+			const torrent = await addSeedboxTorrent(dlKey, hashes[i].trim());
+			if (torrent?.id) success++;
+		} catch (error) {
+			const code = error instanceof DebridLinkError ? error.code : null;
+			if (code === 'notAddTorrent') {
+				notCached++;
+				continue;
+			}
+			if (code === 'maxTorrent' || code === 'floodDetected') {
+				abortedBy = code;
+				break;
+			}
+			refused++;
+			console.error(
+				'Error adding hash in Debrid-Link:',
+				error instanceof Error ? error.message : 'Unknown error'
+			);
+		}
+	}
+
+	if (callback) await callback();
+
+	const parts = [`Added ${success} ${success === 1 ? 'hash' : 'hashes'} to Debrid-Link`];
+	if (notCached > 0) parts.push(`${notCached} not cached`);
+	if (refused > 0) parts.push(`${refused} refused`);
+	toast(`${parts.join(' — ')}.`, magnetToastOptions);
+
+	if (abortedBy) {
+		toast.error(
+			abortedBy === 'maxTorrent'
+				? DL_ERROR_MESSAGES.maxTorrent
+				: 'Debrid-Link rate-limited this action — locked for an hour. Stopped early.',
+			magnetToastOptions
+		);
+	}
 };

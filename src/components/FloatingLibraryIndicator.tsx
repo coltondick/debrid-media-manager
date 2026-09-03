@@ -1,6 +1,8 @@
 import { useLibraryCache } from '@/contexts/LibraryCacheContext';
 import {
 	useAllDebridApiKey,
+	useDebridLinkCredential,
+	useOffcloudApiKey,
 	usePremiumizeCredential,
 	useRealDebridAccessToken,
 	useTorBoxAccessToken,
@@ -19,6 +21,8 @@ export default function FloatingLibraryIndicator() {
 	const adKey = useAllDebridApiKey();
 	const tbKey = useTorBoxAccessToken();
 	const pmKey = usePremiumizeCredential();
+	const ocKey = useOffcloudApiKey();
+	const dlKey = useDebridLinkCredential();
 	const [mounted, setMounted] = useState(false);
 	const lastFetchLabel = useRelativeTimeLabel(lastFetchTime, 'Just now');
 
@@ -32,7 +36,13 @@ export default function FloatingLibraryIndicator() {
 	// syncing the hooks - where the last one could revive a logged-out session.
 	// useLocalStorage already re-reads on its own events, so the tokens are
 	// reactive and one expression is enough.
-	const isLoggedIn = !!rdToken?.trim() || !!adKey?.trim() || !!tbKey?.trim() || !!pmKey?.trim();
+	const isLoggedIn =
+		!!rdToken?.trim() ||
+		!!adKey?.trim() ||
+		!!tbKey?.trim() ||
+		!!pmKey?.trim() ||
+		!!ocKey?.trim() ||
+		!!dlKey?.trim();
 
 	const handleRefresh = async () => {
 		try {

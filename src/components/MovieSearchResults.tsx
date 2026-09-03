@@ -10,6 +10,7 @@ import {
 } from '@/utils/watchService';
 import {
 	Cast,
+	Download,
 	Eye as EyeIcon,
 	Folder,
 	HandHeart,
@@ -27,6 +28,22 @@ import ReportButton from './ReportButton';
 // a stray line.
 const ActionSeparator = () => <hr data-action-separator="true" className="my-1 border-gray-600" />;
 
+/**
+ * The three states of an add button, written out in full.
+ *
+ * Tailwind only keeps class names it can find as literals in the source, so an
+ * assembled one (`` `border-${color}-500` ``) is silently dropped from the
+ * build. The older service blocks in this file still assemble theirs off
+ * `btnColor` and render unstyled because of it - a latent bug, not a pattern to
+ * copy.
+ */
+const addButtonClass = (avail: boolean, noVideos: boolean) =>
+	avail
+		? 'border-green-500 bg-green-900/30 text-green-100 hover:bg-green-800/50'
+		: noVideos
+			? 'border-gray-500 bg-gray-900/30 text-gray-100 hover:bg-gray-800/50'
+			: 'border-blue-500 bg-blue-900/30 text-blue-100 hover:bg-blue-800/50';
+
 type MovieSearchResultsProps = {
 	filteredResults: SearchResult[];
 	onlyShowCached: boolean;
@@ -35,6 +52,15 @@ type MovieSearchResultsProps = {
 	adKey: string | null;
 	torboxKey: string | null;
 	premiumizeKey: string | null;
+	offcloudKey: string | null;
+	/**
+	 * Debrid-Link's OAuth token or pasted API token.
+	 *
+	 * Unlike every other key here it gates nothing but the buttons themselves:
+	 * Debrid-Link has no cache probe, so there is no `dlAvailable` to consult and
+	 * its add button is offered on every row.
+	 */
+	debridLinkKey?: string | null;
 	player: string;
 	hashAndProgress: Record<string, number>;
 	handleShowInfo: (result: SearchResult) => void;
@@ -42,6 +68,8 @@ type MovieSearchResultsProps = {
 	handleCastTorBox?: (hash: string) => Promise<void>;
 	handleCastAllDebrid?: (hash: string) => Promise<void>;
 	handleCastPremiumize?: (hash: string) => Promise<void>;
+	handleCastOffcloud?: (hash: string) => Promise<void>;
+	handleCastDebridLink?: (hash: string) => Promise<void>;
 	handleCopyMagnet: (hash: string) => void;
 	checkServiceAvailability: (
 		result: SearchResult,
@@ -51,6 +79,8 @@ type MovieSearchResultsProps = {
 	addAd: (hash: string) => Promise<void>;
 	addTb: (hash: string) => Promise<void>;
 	addPm: (hash: string) => Promise<void>;
+	addOc: (hash: string) => Promise<void>;
+	addDl?: (hash: string) => Promise<void>;
 	sendTbToRd?: (hash: string) => Promise<void>;
 	/**
 	 * File a request for a release this account cannot fetch on its own.
@@ -64,6 +94,8 @@ type MovieSearchResultsProps = {
 	deleteAd: (hash: string) => Promise<void>;
 	deleteTb: (hash: string) => Promise<void>;
 	deletePm: (hash: string) => Promise<void>;
+	deleteOc: (hash: string) => Promise<void>;
+	deleteDl?: (hash: string) => Promise<void>;
 	imdbId?: string;
 	isHashServiceChecking: (hash: string, service: DebridService) => boolean;
 };
@@ -76,6 +108,8 @@ const MovieSearchResults = ({
 	adKey,
 	torboxKey,
 	premiumizeKey,
+	offcloudKey,
+	debridLinkKey,
 	player,
 	hashAndProgress,
 	handleShowInfo,
@@ -83,18 +117,24 @@ const MovieSearchResults = ({
 	handleCastTorBox,
 	handleCastAllDebrid,
 	handleCastPremiumize,
+	handleCastOffcloud,
+	handleCastDebridLink,
 	handleCopyMagnet,
 	checkServiceAvailability,
 	addRd,
 	addAd,
 	addTb,
 	addPm,
+	addOc,
+	addDl,
 	sendTbToRd,
 	requestContent,
 	deleteRd,
 	deleteAd,
 	deleteTb,
 	deletePm,
+	deleteOc,
+	deleteDl,
 	imdbId,
 	isHashServiceChecking,
 }: MovieSearchResultsProps) => {
@@ -104,6 +144,8 @@ const MovieSearchResults = ({
 	const [castingTbHashes, setCastingTbHashes] = useState<Set<string>>(new Set());
 	const [castingAdHashes, setCastingAdHashes] = useState<Set<string>>(new Set());
 	const [castingPmHashes, setCastingPmHashes] = useState<Set<string>>(new Set());
+	const [castingOcHashes, setCastingOcHashes] = useState<Set<string>>(new Set());
+	const [castingDlHashes, setCastingDlHashes] = useState<Set<string>>(new Set());
 	const [watchingHashes, setWatchingHashes] = useState<Set<string>>(new Set());
 	const [requestingHashes, setRequestingHashes] = useState<Set<string>>(new Set());
 	const [downloadMagnets, setDownloadMagnets] = useState(false);
@@ -231,6 +273,61 @@ const MovieSearchResults = ({
 			});
 		}
 	};
+	const handleAddOc = async (hash: string) => {
+		if (loadingHashes.has(hash)) return;
+		setLoadingHashes((prev) => new Set(prev).add(hash));
+		try {
+			await addOc(hash);
+		} finally {
+			setLoadingHashes((prev) => {
+				const newSet = new Set(prev);
+				newSet.delete(hash);
+				return newSet;
+			});
+		}
+	};
+	const handleDeleteOc = async (hash: string) => {
+		if (loadingHashes.has(hash)) return;
+		setLoadingHashes((prev) => new Set(prev).add(hash));
+		try {
+			await deleteOc(hash);
+		} finally {
+			setLoadingHashes((prev) => {
+				const newSet = new Set(prev);
+				newSet.delete(hash);
+				return newSet;
+			});
+		}
+	};
+	// A second click while the first is in flight is harmless upstream anyway -
+	// Debrid-Link is idempotent by hash and hands back the same torrent id - so
+	// the guard here is only to keep the button from flickering.
+	const handleAddDl = async (hash: string) => {
+		if (!addDl || loadingHashes.has(hash)) return;
+		setLoadingHashes((prev) => new Set(prev).add(hash));
+		try {
+			await addDl(hash);
+		} finally {
+			setLoadingHashes((prev) => {
+				const newSet = new Set(prev);
+				newSet.delete(hash);
+				return newSet;
+			});
+		}
+	};
+	const handleDeleteDl = async (hash: string) => {
+		if (!deleteDl || loadingHashes.has(hash)) return;
+		setLoadingHashes((prev) => new Set(prev).add(hash));
+		try {
+			await deleteDl(hash);
+		} finally {
+			setLoadingHashes((prev) => {
+				const newSet = new Set(prev);
+				newSet.delete(hash);
+				return newSet;
+			});
+		}
+	};
 
 	const handleDeleteAd = async (hash: string) => {
 		if (loadingHashes.has(hash)) return;
@@ -317,6 +414,34 @@ const MovieSearchResults = ({
 		}
 	};
 
+	const handleCastOffcloudWithLoading = async (hash: string) => {
+		if (!handleCastOffcloud || castingOcHashes.has(hash)) return;
+		setCastingOcHashes((prev) => new Set(prev).add(hash));
+		try {
+			await handleCastOffcloud(hash);
+		} finally {
+			setCastingOcHashes((prev) => {
+				const newSet = new Set(prev);
+				newSet.delete(hash);
+				return newSet;
+			});
+		}
+	};
+
+	const handleCastDebridLinkWithLoading = async (hash: string) => {
+		if (!handleCastDebridLink || castingDlHashes.has(hash)) return;
+		setCastingDlHashes((prev) => new Set(prev).add(hash));
+		try {
+			await handleCastDebridLink(hash);
+		} finally {
+			setCastingDlHashes((prev) => {
+				const newSet = new Set(prev);
+				newSet.delete(hash);
+				return newSet;
+			});
+		}
+	};
+
 	const handleMagnetAction = (hash: string) => {
 		if (downloadMagnets) {
 			downloadMagnetFile(hash);
@@ -326,7 +451,16 @@ const MovieSearchResults = ({
 	};
 
 	const handleWatch = async (result: SearchResult) => {
-		const service = pickWatchService(result, { rdKey, adKey, torboxKey, premiumizeKey });
+		// The render-time and click-time service picks are two separate calls, and
+		// both need every key: leaving one out of the second silently does nothing
+		// on click, which is exactly what happened to Premiumize in 91aad488.
+		const service = pickWatchService(result, {
+			rdKey,
+			adKey,
+			torboxKey,
+			premiumizeKey,
+			offcloudKey,
+		});
 		if (!service) return;
 		const biggest = getBiggestVideoFile(result);
 		setWatchingHashes((prev) => new Set(prev).add(result.hash));
@@ -335,10 +469,40 @@ const MovieSearchResults = ({
 				service,
 				player,
 				hash: result.hash,
-				keys: { rdKey, adKey, torboxKey, premiumizeKey },
+				keys: { rdKey, adKey, torboxKey, premiumizeKey, offcloudKey, debridLinkKey },
 				fileName: biggest?.filename,
 				fileId: biggest?.fileId,
 				adInLibrary: inLibrary('ad', result.hash),
+			});
+		} finally {
+			setWatchingHashes((prev) => {
+				const next = new Set(prev);
+				next.delete(result.hash);
+				return next;
+			});
+		}
+	};
+
+	/**
+	 * Watch through Debrid-Link, which `pickWatchService` can never choose.
+	 *
+	 * That is not an oversight: choosing needs an availability flag and
+	 * Debrid-Link has no cache probe to set one from. Its watch button is offered
+	 * on rows the user has already added instead, where the torrent is known to
+	 * be in the account and the resolve is a re-add that returns the same id.
+	 */
+	const handleWatchDl = async (result: SearchResult) => {
+		if (!debridLinkKey) return;
+		const biggest = getBiggestVideoFile(result);
+		setWatchingHashes((prev) => new Set(prev).add(result.hash));
+		try {
+			await openWatch({
+				service: 'dl',
+				player,
+				hash: result.hash,
+				keys: { rdKey, adKey, torboxKey, premiumizeKey, offcloudKey, debridLinkKey },
+				fileName: biggest?.filename,
+				fileId: biggest?.fileId,
 			});
 		} finally {
 			setWatchingHashes((prev) => {
@@ -367,12 +531,18 @@ const MovieSearchResults = ({
 					isDownloaded('rd', r.hash) ||
 					isDownloaded('ad', r.hash) ||
 					isDownloaded('tb', r.hash) ||
-					isDownloaded('pm', r.hash);
+					isDownloaded('pm', r.hash) ||
+					isDownloaded('oc', r.hash) ||
+					isDownloaded('dl', r.hash);
 				const downloading =
 					isDownloading('rd', r.hash) ||
 					isDownloading('ad', r.hash) ||
 					isDownloading('tb', r.hash) ||
-					isDownloading('pm', r.hash);
+					isDownloading('pm', r.hash) ||
+					isDownloading('oc', r.hash) ||
+					// Debrid-Link contributes to the library state but never to the
+					// availability flags beside it - it has no cache probe to set one.
+					isDownloading('dl', r.hash);
 				const inYourLibrary = downloaded || downloading;
 
 				if (
@@ -381,6 +551,7 @@ const MovieSearchResults = ({
 					!r.adAvailable &&
 					!r.tbAvailable &&
 					!r.pmAvailable &&
+					!r.ocAvailable &&
 					!inYourLibrary
 				)
 					return null;
@@ -405,17 +576,20 @@ const MovieSearchResults = ({
 					adKey,
 					torboxKey,
 					premiumizeKey,
+					offcloudKey,
 				});
 				const isWatching = watchingHashes.has(r.hash);
 				const isCastingAd = castingAdHashes.has(r.hash);
 				const isCastingPm = castingPmHashes.has(r.hash);
+				const isCastingOc = castingOcHashes.has(r.hash);
+				const isCastingDl = castingDlHashes.has(r.hash);
 				const isCheckingRd = isHashServiceChecking(r.hash, 'RD');
 				const isCheckingAd = isHashServiceChecking(r.hash, 'AD');
 
 				return (
 					<div
 						key={i}
-						className={`border-2 border-gray-700 ${borderColor(downloaded, downloading)} ${getMovieCountClass(r.videoCount, r.rdAvailable || r.adAvailable || r.tbAvailable || r.pmAvailable)} overflow-hidden rounded-lg bg-opacity-30 shadow transition-shadow duration-200 ease-in hover:shadow-lg`}
+						className={`border-2 border-gray-700 ${borderColor(downloaded, downloading)} ${getMovieCountClass(r.videoCount, r.rdAvailable || r.adAvailable || r.tbAvailable || r.pmAvailable || r.ocAvailable)} overflow-hidden rounded-lg bg-opacity-30 shadow transition-shadow duration-200 ease-in hover:shadow-lg`}
 					>
 						<div className="space-y-2 p-1">
 							<h2 className="line-clamp-2 overflow-hidden text-ellipsis break-words text-sm font-bold leading-tight">
@@ -440,6 +614,7 @@ const MovieSearchResults = ({
 												!r.adAvailable &&
 												!r.tbAvailable &&
 												!r.pmAvailable &&
+												!r.ocAvailable &&
 												(r.trackerStats.seeders > 0 ? (
 													<span className="text-green-400">
 														{' '}
@@ -460,6 +635,7 @@ const MovieSearchResults = ({
 												!r.adAvailable &&
 												!r.tbAvailable &&
 												!r.pmAvailable &&
+												!r.ocAvailable &&
 												(r.trackerStats.seeders > 0 ? (
 													<span className="text-green-400">
 														{' '}
@@ -482,6 +658,7 @@ const MovieSearchResults = ({
 										!r.adAvailable &&
 										!r.tbAvailable &&
 										!r.pmAvailable &&
+										!r.ocAvailable &&
 										(r.trackerStats.seeders > 0 ? (
 											<span className="text-green-400"> • Has seeders</span>
 										) : (
@@ -779,10 +956,166 @@ const MovieSearchResults = ({
 									</button>
 								)}
 
-								{/* — Separator: everything above belongs to one service, everything below does not — */}
-								{(rdKey || adKey || torboxKey || premiumizeKey) && (
+								{(rdKey || adKey || torboxKey || premiumizeKey) && offcloudKey && (
 									<ActionSeparator />
 								)}
+
+								{/* — OC —
+								    No "Check OC" button on purpose: the page-load
+								    sweep already probed every row with the same
+								    `/cache` call, so a per-row repeat finds nothing
+								    new. Premiumize had one and it was removed in
+								    d3d6dd49 for exactly that reason. */}
+								{offcloudKey && inLibrary('oc', r.hash) && (
+									<button
+										className={`haptic-sm inline rounded border-2 border-red-500 bg-red-900/30 px-1 text-xs text-red-100 transition-colors hover:bg-red-800/50 ${isLoading ? 'cursor-not-allowed opacity-50' : ''}`}
+										onClick={() => handleDeleteOc(r.hash)}
+										disabled={isLoading}
+									>
+										{isLoading ? (
+											<Loader2 className="inline-block h-3 w-3 animate-spin" />
+										) : (
+											<X className="mr-2 inline h-3 w-3" />
+										)}
+										{isLoading
+											? 'Removing...'
+											: `OC (${hashAndProgress[`oc:${r.hash}`] + '%'})`}
+									</button>
+								)}
+								{offcloudKey && notInLibrary('oc', r.hash) && (
+									<button
+										className={`haptic-sm inline rounded border-2 px-1 text-xs transition-colors ${addButtonClass(r.ocAvailable, r.noVideos)} ${isLoading ? 'cursor-not-allowed opacity-50' : ''}`}
+										onClick={() => handleAddOc(r.hash)}
+										disabled={isLoading}
+									>
+										{isLoading ? (
+											<Loader2 className="inline-block h-3 w-3 animate-spin" />
+										) : (
+											btnIcon(r.ocAvailable)
+										)}
+										{isLoading ? 'Adding...' : btnLabel(r.ocAvailable, 'OC')}
+									</button>
+								)}
+
+								{offcloudKey && handleCastOffcloud && r.ocAvailable && (
+									<button
+										className={`haptic-sm inline rounded border-2 border-[#f97316] bg-[#f97316]/30 px-1 text-xs text-orange-100 transition-colors hover:bg-[#f97316]/50 ${isCastingOc ? 'cursor-not-allowed opacity-50' : ''}`}
+										onClick={() => handleCastOffcloudWithLoading(r.hash)}
+										disabled={isCastingOc}
+									>
+										{isCastingOc ? (
+											<>
+												<Loader2 className="mr-1 inline-block h-3 w-3 animate-spin" />
+												Casting...
+											</>
+										) : (
+											<span className="inline-flex items-center">
+												<Cast className="mr-1 h-3 w-3 text-orange-400" />
+												Cast (OC)
+											</span>
+										)}
+									</button>
+								)}
+
+								{(rdKey || adKey || torboxKey || premiumizeKey || offcloudKey) &&
+									debridLinkKey && <ActionSeparator />}
+
+								{/* — DL —
+								    The add button renders on **every** row, and no
+								    badge, pill or "Check DL" goes with it.
+								    Debrid-Link retired `/seedbox/cached` and put
+								    nothing in its place, so the only cache probe it
+								    has left is a mutating add — there is nothing to
+								    check with, and a permanently-false `dlAvailable`
+								    would lie to the pills, the sorts and
+								    `pickWatchService` alike. The add is the probe:
+								    it sends the full magnet, so a cached release
+								    comes back playable in one request and an
+								    uncached one downloads for real. */}
+								{debridLinkKey && inLibrary('dl', r.hash) && (
+									<button
+										className={`haptic-sm inline rounded border-2 border-red-500 bg-red-900/30 px-1 text-xs text-red-100 transition-colors hover:bg-red-800/50 ${isLoading ? 'cursor-not-allowed opacity-50' : ''}`}
+										onClick={() => handleDeleteDl(r.hash)}
+										disabled={isLoading}
+									>
+										{isLoading ? (
+											<Loader2 className="inline-block h-3 w-3 animate-spin" />
+										) : (
+											<X className="mr-2 inline h-3 w-3" />
+										)}
+										{isLoading
+											? 'Removing...'
+											: `DL (${hashAndProgress[`dl:${r.hash}`] + '%'})`}
+									</button>
+								)}
+								{debridLinkKey && notInLibrary('dl', r.hash) && (
+									<button
+										className={`haptic-sm inline rounded border-2 border-[#38bdf8] bg-[#38bdf8]/20 px-1 text-xs text-sky-100 transition-colors hover:bg-[#38bdf8]/40 ${isLoading ? 'cursor-not-allowed opacity-50' : ''}`}
+										onClick={() => handleAddDl(r.hash)}
+										disabled={isLoading}
+										title="Debrid-Link has no cache check — adding is the only way to find out, and an uncached release downloads for real"
+									>
+										{isLoading ? (
+											<Loader2 className="inline-block h-3 w-3 animate-spin" />
+										) : (
+											<Download className="mr-2 inline h-3 w-3" />
+										)}
+										{isLoading ? 'Adding...' : 'Add to DL'}
+									</button>
+								)}
+								{/* No availability gate, unlike Cast (OC): Debrid-Link
+								    publishes no cache probe at all, so there is no
+								    `dlAvailable` to gate on and never will be. The
+								    cast itself is the probe — it adds the full magnet
+								    with the caster's own credential, which answers
+								    complete in one request for cached content and
+								    starts a real download otherwise. */}
+								{debridLinkKey && handleCastDebridLink && (
+									<button
+										className={`haptic-sm inline rounded border-2 border-[#38bdf8] bg-[#38bdf8]/20 px-1 text-xs text-sky-100 transition-colors hover:bg-[#38bdf8]/40 ${isCastingDl ? 'cursor-not-allowed opacity-50' : ''}`}
+										onClick={() => handleCastDebridLinkWithLoading(r.hash)}
+										disabled={isCastingDl}
+										title="Debrid-Link has no cache check — casting adds the release, and an uncached one downloads for real"
+									>
+										{isCastingDl ? (
+											<>
+												<Loader2 className="mr-1 inline-block h-3 w-3 animate-spin" />
+												Casting...
+											</>
+										) : (
+											<span className="inline-flex items-center">
+												<Cast className="mr-1 h-3 w-3 text-sky-400" />
+												Cast (DL)
+											</span>
+										)}
+									</button>
+								)}
+
+								{debridLinkKey && inLibrary('dl', r.hash) && player && (
+									<button
+										className={`haptic-sm inline rounded border-2 border-[#38bdf8] bg-[#38bdf8]/20 px-1 text-xs text-sky-100 transition-colors hover:bg-[#38bdf8]/40 ${isWatching ? 'cursor-not-allowed opacity-50' : ''}`}
+										title="Watch via Debrid-Link"
+										onClick={() => handleWatchDl(r)}
+										disabled={isWatching}
+									>
+										<span className="inline-flex items-center">
+											{isWatching ? (
+												<Loader2 className="mr-1 h-3 w-3 animate-spin" />
+											) : (
+												<EyeIcon className="mr-1 h-3 w-3 text-sky-400" />
+											)}
+											Watch (DL)
+										</span>
+									</button>
+								)}
+
+								{/* — Separator: everything above belongs to one service, everything below does not — */}
+								{(rdKey ||
+									adKey ||
+									torboxKey ||
+									premiumizeKey ||
+									offcloudKey ||
+									debridLinkKey) && <ActionSeparator />}
 
 								{watchService && player && (
 									<button

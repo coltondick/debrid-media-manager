@@ -8,12 +8,22 @@ interface MainActionsProps {
 	tbUser: TorBoxUser | null;
 	adUser: boolean;
 	pmUser: boolean;
+	ocUser: boolean;
+	dlUser: boolean;
 	isLoading: boolean;
 }
 
 const isLocalDev = process.env.NODE_ENV === 'development';
 
-export function MainActions({ rdUser, tbUser, adUser, pmUser, isLoading }: MainActionsProps) {
+export function MainActions({
+	rdUser,
+	tbUser,
+	adUser,
+	pmUser,
+	ocUser,
+	dlUser,
+	isLoading,
+}: MainActionsProps) {
 	const castButtons = [
 		rdUser && {
 			href: '/stremio',
@@ -51,6 +61,24 @@ export function MainActions({ rdUser, tbUser, adUser, pmUser, isLoading }: MainA
 			textColor: 'text-red-100',
 			iconColor: 'text-red-400',
 		},
+		ocUser && {
+			href: '/stremio-offcloud',
+			label: 'Cast for OC',
+			borderColor: 'border-orange-500',
+			bgColor: 'bg-orange-900/30',
+			hoverColor: 'hover:bg-orange-800/50',
+			textColor: 'text-orange-100',
+			iconColor: 'text-orange-400',
+		},
+		dlUser && {
+			href: '/stremio-debridlink',
+			label: 'Cast for DL',
+			borderColor: 'border-sky-500',
+			bgColor: 'bg-sky-900/30',
+			hoverColor: 'hover:bg-sky-800/50',
+			textColor: 'text-sky-100',
+			iconColor: 'text-sky-400',
+		},
 	].filter(Boolean) as {
 		href: string;
 		label: string;
@@ -61,6 +89,13 @@ export function MainActions({ rdUser, tbUser, adUser, pmUser, isLoading }: MainA
 		iconColor: string;
 	}[];
 
+	// Written out as literals, never assembled: Tailwind only keeps class names
+	// it can find whole in the source.
+	//
+	// Past four buttons the row does not get narrower columns, it gets a second
+	// line - five wear 3+2 and six wear 3+3. A fifth button under `grid-cols-4`
+	// would have wrapped alone into a quarter-width cell, which is why this
+	// stops at four columns rather than counting up.
 	const castGridCols =
 		castButtons.length === 1
 			? 'grid-cols-1'
@@ -68,7 +103,9 @@ export function MainActions({ rdUser, tbUser, adUser, pmUser, isLoading }: MainA
 				? 'grid-cols-2'
 				: castButtons.length === 3
 					? 'grid-cols-3'
-					: 'grid-cols-4';
+					: castButtons.length === 4
+						? 'grid-cols-4'
+						: 'grid-cols-3';
 
 	return (
 		<div className="flex w-full flex-col gap-3">
@@ -118,9 +155,10 @@ export function MainActions({ rdUser, tbUser, adUser, pmUser, isLoading }: MainA
 			    audiences. Transfers is where a Real-Debrid user watches content
 			    arrive, so it is theirs. Requests is where a TorBox or AllDebrid
 			    user picks up somebody else's ask, so it is the fulfillers'.
-			    Premiumize is deliberately not here: the uploader cannot source a
-			    transfer from it, so a Premiumize user has nothing to fulfil with. A
-			    user who is both sees the pair side by side; a user who is only one
+			    Premiumize, Offcloud and Debrid-Link are deliberately not here: the
+			    uploader cannot source a transfer from any of them, so those users
+			    have nothing to fulfil with — which is why neither Offcloud nor
+			    Debrid-Link reaches the gate below. A user who is both sees the pair side by side; a user who is only one
 			    sees that one full-width rather than stranded in half a row. (A
 			    Real-Debrid-only user files a request from the search result itself —
 			    the button there — and never needs the board.) */}

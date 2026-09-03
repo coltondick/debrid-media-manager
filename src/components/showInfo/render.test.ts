@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { renderTorrentInfo, renderTorrentInfoTB } from './render';
+import {
+	renderTorrentInfo,
+	renderTorrentInfoDL,
+	renderTorrentInfoOC,
+	renderTorrentInfoTB,
+} from './render';
 
 const baseFile = {
 	id: 1,
@@ -157,5 +162,91 @@ describe('renderTorrentInfoTB', () => {
 
 	it('offers no watch button when called without options at all', () => {
 		expect(renderTorrentInfoTB(files)).not.toContain('data-watch');
+	});
+});
+
+describe('renderTorrentInfoOC', () => {
+	const CDN = 'https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/n-sto/obj/1/2/tok/sig';
+	const files = [
+		{ link: `${CDN}/Episode.mkv`, filename: 'Episode.mkv', filesize: 2048 },
+		{ link: `${CDN}/readme.txt`, filename: 'readme.txt', filesize: 12 },
+	];
+
+	// An Offcloud CDN link is already playable - keyless, any IP, Range honoured
+	// - so both buttons work off the link and neither needs the info hash a
+	// plain-HTTP row does not have.
+	it('carries the explore link on the watch row', () => {
+		const html = renderTorrentInfoOC(files, { canWatch: true });
+
+		expect(html).toContain('data-watch="1"');
+		expect(html).toContain(`data-watch-link="${CDN}/Episode.mkv"`);
+		expect(html).toContain(`data-oc-link="${CDN}/Episode.mkv"`);
+	});
+
+	it('does not offer watch on a non-video row', () => {
+		const html = renderTorrentInfoOC(files, { canWatch: true });
+
+		expect(html).not.toContain(`data-watch-link="${CDN}/readme.txt"`);
+		// Downloading it is still fine.
+		expect(html).toContain(`data-oc-link="${CDN}/readme.txt"`);
+	});
+
+	it('offers no watch button without a player', () => {
+		expect(renderTorrentInfoOC(files)).not.toContain('data-watch');
+	});
+
+	// `cloud/explore` returns bare URLs; a file `cache/info` did not describe
+	// still has to appear, with its decoded basename.
+	it('renders a file whose size is unknown', () => {
+		const html = renderTorrentInfoOC([
+			{ link: `${CDN}/Episode.mkv`, filename: 'Episode.mkv', filesize: null },
+		]);
+
+		expect(html).toContain('Episode.mkv');
+		expect(html).toContain('0.00');
+	});
+});
+
+describe('renderTorrentInfoDL', () => {
+	const SEED = 'https://seed41.debrid.link/dl/s37yg6wsgdilpqo80wwssulm';
+	const files = [
+		{ downloadUrl: `${SEED}-2/Episode.mkv`, filename: 'Episode.mkv', filesize: 2048 },
+		{ downloadUrl: `${SEED}-3/readme.txt`, filename: 'readme.txt', filesize: 12 },
+	];
+
+	// A Debrid-Link download URL is the entire capability - no token, no
+	// signature, no IP binding - so both buttons work off it directly and
+	// neither resolves a hash.
+	it('carries the keyless download URL on the watch row', () => {
+		const html = renderTorrentInfoDL(files, { canWatch: true });
+
+		expect(html).toContain('data-watch="1"');
+		expect(html).toContain(`data-watch-link="${SEED}-2/Episode.mkv"`);
+		expect(html).toContain(`data-dl-link="${SEED}-2/Episode.mkv"`);
+	});
+
+	it('does not offer watch on a non-video row', () => {
+		const html = renderTorrentInfoDL(files, { canWatch: true });
+
+		expect(html).not.toContain(`data-watch-link="${SEED}-3/readme.txt"`);
+		// Downloading it is still fine.
+		expect(html).toContain(`data-dl-link="${SEED}-3/readme.txt"`);
+	});
+
+	it('offers no watch button without a player', () => {
+		expect(renderTorrentInfoDL(files)).not.toContain('data-watch');
+	});
+
+	// A ZIP placeholder row has no URL to hand out; it is still listed, because
+	// blanking the file table would hide the release entirely.
+	it('lists a file with no URL but offers no buttons for it', () => {
+		const html = renderTorrentInfoDL(
+			[{ downloadUrl: '', filename: 'Some.Show.S02.zip', filesize: 4096 }],
+			{ canWatch: true }
+		);
+
+		expect(html).toContain('Some.Show.S02.zip');
+		expect(html).not.toContain('data-dl-link');
+		expect(html).not.toContain('data-watch');
 	});
 });

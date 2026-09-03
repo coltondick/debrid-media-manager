@@ -5,14 +5,17 @@ import {
 	AvailabilityService,
 	CastService,
 	ContentRequestService,
+	DebridLinkCastService,
 	DebridUploaderMapService,
 	HashImdbService,
 	HashSearchService,
 	HistoryAggregationService,
 	ImdbSearchService,
+	NewznabApiCacheService,
 	Nzb2rdMapService,
 	type Nzb2rdWaiter,
 	NzbSearchCacheService,
+	OffcloudCastService,
 	PremiumizeCastService,
 	RdOperationalService,
 	ReportService,
@@ -46,6 +49,8 @@ export type RepositoryDependencies = Partial<{
 	torboxCastService: TorBoxCastService;
 	allDebridCastService: AllDebridCastService;
 	premiumizeCastService: PremiumizeCastService;
+	offcloudCastService: OffcloudCastService;
+	debridLinkCastService: DebridLinkCastService;
 	reportService: ReportService;
 	torrentSnapshotService: TorrentSnapshotService;
 	hashImdbService: HashImdbService;
@@ -61,6 +66,7 @@ export type RepositoryDependencies = Partial<{
 	debridUploaderMapService: DebridUploaderMapService;
 	nzb2rdMapService: Nzb2rdMapService;
 	nzbSearchCacheService: NzbSearchCacheService;
+	newznabApiCacheService: NewznabApiCacheService;
 	transferMetaService: TransferMetaService;
 	contentRequestService: ContentRequestService;
 }>;
@@ -74,6 +80,8 @@ export class Repository {
 	private torboxCastService: TorBoxCastService;
 	private allDebridCastService: AllDebridCastService;
 	private premiumizeCastService: PremiumizeCastService;
+	private offcloudCastService: OffcloudCastService;
+	private debridLinkCastService: DebridLinkCastService;
 	private reportService: ReportService;
 	private torrentSnapshotService: TorrentSnapshotService;
 	private hashImdbService: HashImdbService;
@@ -89,6 +97,7 @@ export class Repository {
 	private debridUploaderMapService: DebridUploaderMapService;
 	private nzb2rdMapService: Nzb2rdMapService;
 	private nzbSearchCacheService: NzbSearchCacheService;
+	private newznabApiCacheService: NewznabApiCacheService;
 	private transferMetaService: TransferMetaService;
 	private contentRequestService: ContentRequestService;
 
@@ -101,6 +110,8 @@ export class Repository {
 		torboxCastService,
 		allDebridCastService,
 		premiumizeCastService,
+		offcloudCastService,
+		debridLinkCastService,
 		reportService,
 		torrentSnapshotService,
 		hashImdbService,
@@ -116,6 +127,7 @@ export class Repository {
 		debridUploaderMapService,
 		nzb2rdMapService,
 		nzbSearchCacheService,
+		newznabApiCacheService,
 		transferMetaService,
 		contentRequestService,
 	}: RepositoryDependencies = {}) {
@@ -127,6 +139,8 @@ export class Repository {
 		this.torboxCastService = torboxCastService ?? new TorBoxCastService();
 		this.allDebridCastService = allDebridCastService ?? new AllDebridCastService();
 		this.premiumizeCastService = premiumizeCastService ?? new PremiumizeCastService();
+		this.offcloudCastService = offcloudCastService ?? new OffcloudCastService();
+		this.debridLinkCastService = debridLinkCastService ?? new DebridLinkCastService();
 		this.reportService = reportService ?? new ReportService();
 		this.torrentSnapshotService = torrentSnapshotService ?? new TorrentSnapshotService();
 		this.hashImdbService = hashImdbService ?? new HashImdbService();
@@ -143,6 +157,7 @@ export class Repository {
 		this.debridUploaderMapService = debridUploaderMapService ?? new DebridUploaderMapService();
 		this.nzb2rdMapService = nzb2rdMapService ?? new Nzb2rdMapService();
 		this.nzbSearchCacheService = nzbSearchCacheService ?? new NzbSearchCacheService();
+		this.newznabApiCacheService = newznabApiCacheService ?? new NewznabApiCacheService();
 		this.transferMetaService = transferMetaService ?? new TransferMetaService();
 		this.contentRequestService = contentRequestService ?? new ContentRequestService();
 	}
@@ -171,6 +186,7 @@ export class Repository {
 			this.debridUploaderMapService.disconnect(),
 			this.nzb2rdMapService.disconnect(),
 			this.nzbSearchCacheService.disconnect(),
+			this.newznabApiCacheService.disconnect(),
 			this.transferMetaService.disconnect(),
 			this.contentRequestService.disconnect(),
 		]);
@@ -329,6 +345,20 @@ export class Repository {
 		results: Parameters<NzbSearchCacheService['set']>[2]
 	) {
 		return this.nzbSearchCacheService.set(imdbId, seasonNum, results);
+	}
+
+	// Newznab aggregation cache. Separate from the one above because the clock is
+	// different: an *arr polls the same searches on a timer, so the TTL scales
+	// with the age of the content rather than being fixed per title.
+	public getCachedNewznabApiSearch(key: string, maxTtlMs?: number) {
+		return this.newznabApiCacheService.get(key, Date.now(), maxTtlMs);
+	}
+
+	public setCachedNewznabApiSearch(
+		key: string,
+		results: Parameters<NewznabApiCacheService['set']>[1]
+	) {
+		return this.newznabApiCacheService.set(key, results);
 	}
 
 	// Availability Service Methods
@@ -857,6 +887,184 @@ export class Repository {
 		maxSize?: number
 	) {
 		return this.premiumizeCastService.getOtherStreams(imdbId, userId, limit, maxSize);
+	}
+
+	// Offcloud Cast Methods
+	public saveOffcloudCastProfile(
+		userId: string,
+		apiKey: string,
+		movieMaxSize?: number,
+		episodeMaxSize?: number,
+		otherStreamsLimit?: number,
+		hideCastOption?: boolean
+	) {
+		return this.offcloudCastService.saveCastProfile(
+			userId,
+			apiKey,
+			movieMaxSize,
+			episodeMaxSize,
+			otherStreamsLimit,
+			hideCastOption
+		);
+	}
+
+	public updateOffcloudCastSettings(
+		userId: string,
+		movieMaxSize?: number,
+		episodeMaxSize?: number,
+		otherStreamsLimit?: number,
+		hideCastOption?: boolean
+	) {
+		return this.offcloudCastService.updateCastSettings(
+			userId,
+			movieMaxSize,
+			episodeMaxSize,
+			otherStreamsLimit,
+			hideCastOption
+		);
+	}
+
+	public getOffcloudCastProfile(userId: string) {
+		return this.offcloudCastService.getCastProfile(userId);
+	}
+
+	public saveOffcloudCast(
+		imdbId: string,
+		userId: string,
+		hash: string,
+		filename: string,
+		fileSize: number,
+		path?: string
+	) {
+		return this.offcloudCastService.saveCast(imdbId, userId, hash, filename, fileSize, path);
+	}
+
+	public fetchOffcloudCastedMovies(userId: string) {
+		return this.offcloudCastService.fetchCastedMovies(userId);
+	}
+
+	public fetchOffcloudCastedShows(userId: string) {
+		return this.offcloudCastService.fetchCastedShows(userId);
+	}
+
+	public fetchAllOffcloudCastedLinks(userId: string) {
+		return this.offcloudCastService.fetchAllCastedLinks(userId);
+	}
+
+	public deleteOffcloudCastedLink(imdbId: string, userId: string, hash: string) {
+		return this.offcloudCastService.deleteCastedLink(imdbId, userId, hash);
+	}
+
+	public getOffcloudUserCastStreams(imdbId: string, userId: string, limit?: number) {
+		return this.offcloudCastService.getUserCastStreams(imdbId, userId, limit);
+	}
+
+	public getOffcloudOtherStreams(
+		imdbId: string,
+		userId: string,
+		limit?: number,
+		maxSize?: number
+	) {
+		return this.offcloudCastService.getOtherStreams(imdbId, userId, limit, maxSize);
+	}
+
+	// Debrid-Link Cast Methods
+	public saveDebridLinkCastProfile(
+		userId: string,
+		apiKey: string,
+		movieMaxSize?: number,
+		episodeMaxSize?: number,
+		otherStreamsLimit?: number,
+		hideCastOption?: boolean,
+		refreshToken?: string | null
+	) {
+		return this.debridLinkCastService.saveCastProfile(
+			userId,
+			apiKey,
+			movieMaxSize,
+			episodeMaxSize,
+			otherStreamsLimit,
+			hideCastOption,
+			refreshToken
+		);
+	}
+
+	public updateDebridLinkCastSettings(
+		userId: string,
+		movieMaxSize?: number,
+		episodeMaxSize?: number,
+		otherStreamsLimit?: number,
+		hideCastOption?: boolean
+	) {
+		return this.debridLinkCastService.updateCastSettings(
+			userId,
+			movieMaxSize,
+			episodeMaxSize,
+			otherStreamsLimit,
+			hideCastOption
+		);
+	}
+
+	public getDebridLinkCastProfile(userId: string) {
+		return this.debridLinkCastService.getCastProfile(userId);
+	}
+
+	public saveDebridLinkCast(
+		imdbId: string,
+		userId: string,
+		hash: string,
+		filename: string,
+		fileSize: number,
+		path?: string,
+		downloadUrl?: string
+	) {
+		return this.debridLinkCastService.saveCast(
+			imdbId,
+			userId,
+			hash,
+			filename,
+			fileSize,
+			path,
+			downloadUrl
+		);
+	}
+
+	public fetchDebridLinkCastedMovies(userId: string) {
+		return this.debridLinkCastService.fetchCastedMovies(userId);
+	}
+
+	public fetchDebridLinkCastedShows(userId: string) {
+		return this.debridLinkCastService.fetchCastedShows(userId);
+	}
+
+	public fetchAllDebridLinkCastedLinks(userId: string) {
+		return this.debridLinkCastService.fetchAllCastedLinks(userId);
+	}
+
+	public deleteDebridLinkCastedLink(imdbId: string, userId: string, hash: string) {
+		return this.debridLinkCastService.deleteCastedLink(imdbId, userId, hash);
+	}
+
+	public getDebridLinkUserCastStreams(imdbId: string, userId: string, limit?: number) {
+		return this.debridLinkCastService.getUserCastStreams(imdbId, userId, limit);
+	}
+
+	public getDebridLinkOtherStreams(
+		imdbId: string,
+		userId: string,
+		limit?: number,
+		maxSize?: number
+	) {
+		return this.debridLinkCastService.getOtherStreams(imdbId, userId, limit, maxSize);
+	}
+
+	/**
+	 * The play route's last resort. See `DebridLinkCastService` - the value is a
+	 * permanent unauthenticated capability, so this is the only read that returns
+	 * it and the only caller is the redirect.
+	 */
+	public getDebridLinkStoredDownloadUrl(hash: string, path?: string | null) {
+		return this.debridLinkCastService.getStoredDownloadUrl(hash, path);
 	}
 
 	public getAllDebridCastLink(magnetId: number, fileIndex: number) {

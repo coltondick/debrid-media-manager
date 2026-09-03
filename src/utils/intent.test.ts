@@ -12,12 +12,36 @@ const mocks = vi.hoisted(() => ({
 	getOwnedTorBoxStreamUrl: vi.fn(),
 	getWebDownloadStreamUrlByHash: vi.fn(),
 	directDownloadPremiumize: vi.fn(),
+	addSeedboxTorrent: vi.fn(),
+	addOffcloudCloud: vi.fn(),
+	getOffcloudCloudStatus: vi.fn(),
+	exploreOffcloudCloud: vi.fn(),
+	getOffcloudCacheInfo: vi.fn(),
 }));
 
 vi.mock('@/services/allDebrid', () => ({ unlockLink: mocks.unlockLink }));
 vi.mock('@/services/premiumize', () => ({
 	directDownloadPremiumize: mocks.directDownloadPremiumize,
 }));
+// `isValidBtih` and `joinExploreWithCacheInfo` are pure and are the behaviour
+// under test here, so only the four network calls are replaced.
+vi.mock('@/services/offcloud', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('@/services/offcloud')>();
+	return {
+		...actual,
+		addOffcloudCloud: mocks.addOffcloudCloud,
+		getOffcloudCloudStatus: mocks.getOffcloudCloudStatus,
+		exploreOffcloudCloud: mocks.exploreOffcloudCloud,
+		getOffcloudCacheInfo: mocks.getOffcloudCacheInfo,
+	};
+});
+// `toMagnetUri` and `isDlFinished` are pure and are the behaviour under test
+// here - the magnet form and the `>=` threshold are the two things that decide
+// what the user gets - so only the one network call is replaced.
+vi.mock('@/services/debridLink', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('@/services/debridLink')>();
+	return { ...actual, addSeedboxTorrent: mocks.addSeedboxTorrent };
+});
 vi.mock('@/services/realDebrid', () => ({
 	addHashAsMagnet: mocks.addHashAsMagnet,
 	deleteTorrent: mocks.deleteTorrent,
@@ -151,6 +175,11 @@ describe('isWatchService', () => {
 		expect(isWatchService('ad')).toBe(true);
 		expect(isWatchService('tb')).toBe(true);
 		expect(isWatchService('tbw')).toBe(true);
+		expect(isWatchService('pm')).toBe(true);
+		expect(isWatchService('oc')).toBe(true);
+		// Debrid-Link is a watch service even though nothing can ever *pick* it
+		// from an availability flag - the /api/watch routes gate on this.
+		expect(isWatchService('dl')).toBe(true);
 		expect(isWatchService('bogus')).toBe(false);
 		expect(isWatchService(undefined)).toBe(false);
 	});
@@ -424,14 +453,14 @@ describe('Premiumize intents', () => {
 		{
 			path: 'BBB/poster.jpg',
 			size: 310380,
-			link: `https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/704233992/1/tok/sig/poster.jpg`,
+			link: `https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/100000002/1/tok/sig/poster.jpg`,
 			stream_link: null,
 		},
 		{
 			path: 'BBB/Big Buck Bunny.mp4',
 			size: 276134947,
-			link: `https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/704233992/1/tok/sig/BBB.mp4`,
-			stream_link: `https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/704233992/1/tok/sig/BBB-stream.mp4`,
+			link: `https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/100000002/1/tok/sig/BBB.mp4`,
+			stream_link: `https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/100000002/1/tok/sig/BBB-stream.mp4`,
 		},
 	];
 
@@ -443,7 +472,7 @@ describe('Premiumize intents', () => {
 		const { intent } = await getInstantIntent('pm-key', 'hash', 0, '1.2.3.4', 'web', 'x', 'pm');
 
 		expect(intent).toBe(
-			`https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/704233992/1/tok/sig/BBB-stream.mp4`
+			`https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/100000002/1/tok/sig/BBB-stream.mp4`
 		);
 	});
 
@@ -462,7 +491,7 @@ describe('Premiumize intents', () => {
 		);
 
 		expect(intent).toBe(
-			`https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/704233992/1/tok/sig/poster.jpg`
+			`https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/100000002/1/tok/sig/poster.jpg`
 		);
 	});
 
@@ -485,7 +514,7 @@ describe('Premiumize intents', () => {
 	it('treats a Premiumize link as already playable - there is nothing to unrestrict', async () => {
 		const { intent } = await getIntent(
 			'pm-key',
-			`https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/704233992/1/tok/sig/BBB.mp4`,
+			`https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/100000002/1/tok/sig/BBB.mp4`,
 			'1.2.3.4',
 			'web',
 			'x',
@@ -493,7 +522,7 @@ describe('Premiumize intents', () => {
 		);
 
 		expect(intent).toBe(
-			`https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/704233992/1/tok/sig/BBB.mp4`
+			`https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/pool/uid/100000002/1/tok/sig/BBB.mp4`
 		);
 		expect(mocks.unrestrictLink).not.toHaveBeenCalled();
 		expect(mocks.unlockLink).not.toHaveBeenCalled();
@@ -501,5 +530,319 @@ describe('Premiumize intents', () => {
 
 	it('recognises pm as a watch service', () => {
 		expect(isWatchService('pm')).toBe(true);
+	});
+});
+describe('Offcloud intents', () => {
+	const HASH = 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c';
+	const CDN =
+		'https://1-cdn2-ovh-fra.energycdn.com/cdn3sto/littlemouse-sto/5e8a93bb/100000001/1788380601/tok/sig';
+	const LINKS = [`${CDN}/poster.jpg`, `${CDN}/Big%20Buck%20Bunny.mp4`];
+	const FILES = [
+		{ folder: 'BBB', filename: 'poster.jpg', size: 310380 },
+		{ folder: 'BBB', filename: 'Big Buck Bunny.mp4', size: 276134947 },
+	];
+
+	const added = (status: string) => ({
+		requestId: 'req-1',
+		fileName: 'Big Buck Bunny',
+		status,
+		originalLink: `magnet:?xt=urn:btih:${HASH}`,
+	});
+
+	beforeEach(() => {
+		mocks.exploreOffcloudCloud.mockResolvedValue(LINKS);
+		mocks.getOffcloudCacheInfo.mockResolvedValue([
+			{ source: `magnet:?xt=urn:btih:${HASH}`, cached: true, files: FILES },
+		]);
+	});
+
+	it('plays a cached hash without polling at all', async () => {
+		// A cached magnet comes back `downloaded` inside the add response, so the
+		// status endpoint is never touched on the path that matters.
+		mocks.addOffcloudCloud.mockResolvedValue(added('downloaded'));
+
+		const { intent } = await getInstantIntent('oc-key', HASH, 0, '1.2.3.4', 'web', 'x', 'oc');
+
+		expect(intent).toBe(`${CDN}/Big%20Buck%20Bunny.mp4`);
+		expect(mocks.getOffcloudCloudStatus).not.toHaveBeenCalled();
+	});
+
+	it('picks the biggest file, never explore[0]', async () => {
+		// Explore returns Offcloud's own order, not "biggest first", so a
+		// first-link fallback hands the user the 310 KB poster.
+		mocks.addOffcloudCloud.mockResolvedValue(added('downloaded'));
+
+		const { intent } = await getInstantIntent('oc-key', HASH, 0, '1.2.3.4', 'web', 'x', 'oc');
+
+		expect(intent).not.toBe(`${CDN}/poster.jpg`);
+	});
+
+	it('prefers the named file when the caller knows which one it wants', async () => {
+		// The name is matched against the decoded basename of the CDN path, which
+		// is the only thing explore's links and cache/info's listing share.
+		mocks.addOffcloudCloud.mockResolvedValue(added('downloaded'));
+
+		const { intent } = await getInstantIntent(
+			'oc-key',
+			HASH,
+			0,
+			'1.2.3.4',
+			'web',
+			'x',
+			'oc',
+			'poster.jpg'
+		);
+
+		expect(intent).toBe(`${CDN}/poster.jpg`);
+	});
+
+	it('still resolves when cache/info fails - explore alone carries the names', async () => {
+		mocks.addOffcloudCloud.mockResolvedValue(added('downloaded'));
+		mocks.getOffcloudCacheInfo.mockRejectedValue(new Error('NOAUTH'));
+
+		const { intent } = await getInstantIntent(
+			'oc-key',
+			HASH,
+			0,
+			'1.2.3.4',
+			'web',
+			'x',
+			'oc',
+			'Big Buck Bunny.mp4'
+		);
+
+		expect(intent).toBe(`${CDN}/Big%20Buck%20Bunny.mp4`);
+	});
+
+	it('refuses a garbage hash before Offcloud can turn it into a zombie', async () => {
+		// `magnet:?xt=urn:btih:zzzz` is accepted upstream with a 200 and a
+		// requestId, then parks in `created` forever. Nothing must be added.
+		const { error } = await getInstantIntent('oc-key', 'zzzz', 0, '1.2.3.4', 'web', 'x', 'oc');
+
+		expect(error).toMatch(/not a valid info hash/);
+		expect(mocks.addOffcloudCloud).not.toHaveBeenCalled();
+	});
+
+	it('polls until the item finishes, then resolves it', async () => {
+		vi.useFakeTimers();
+		try {
+			mocks.addOffcloudCloud.mockResolvedValue(added('created'));
+			mocks.getOffcloudCloudStatus
+				.mockResolvedValueOnce({
+					requestId: 'req-1',
+					status: 'downloading',
+					fileName: 'x',
+					progress: 40,
+					message: null,
+				})
+				.mockResolvedValueOnce({
+					requestId: 'req-1',
+					status: 'downloaded',
+					fileName: 'x',
+					progress: null,
+					message: null,
+				});
+
+			const pending = getInstantIntent('oc-key', HASH, 0, '1.2.3.4', 'web', 'x', 'oc');
+			await vi.advanceTimersByTimeAsync(5_000);
+
+			expect((await pending).intent).toBe(`${CDN}/Big%20Buck%20Bunny.mp4`);
+			expect(mocks.getOffcloudCloudStatus).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('gives up on a zombie after ~15s instead of polling forever', async () => {
+		// A valid hash nobody is seeding behaves exactly like the garbage magnet
+		// once it is in: `created` / "Loading..." with nothing upstream ever
+		// failing it. Without the deadline this holds the watch tab open for good.
+		vi.useFakeTimers();
+		try {
+			mocks.addOffcloudCloud.mockResolvedValue(added('created'));
+			mocks.getOffcloudCloudStatus.mockResolvedValue({
+				requestId: 'req-1',
+				status: 'created',
+				fileName: 'x',
+				progress: null,
+				message: 'Loading...',
+			});
+
+			const pending = getInstantIntent('oc-key', HASH, 0, '1.2.3.4', 'web', 'x', 'oc');
+			await vi.advanceTimersByTimeAsync(60_000);
+			const { error, intent } = await pending;
+
+			expect(intent).toBeUndefined();
+			expect(error).toMatch(/still 'created' after 15s/);
+			expect(mocks.exploreOffcloudCloud).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('reports a failed transfer rather than waiting out the deadline', async () => {
+		mocks.addOffcloudCloud.mockResolvedValue(added('error'));
+
+		const { error } = await getInstantIntent('oc-key', HASH, 0, '1.2.3.4', 'web', 'x', 'oc');
+
+		expect(error).toMatch(/reported 'error'/);
+		expect(mocks.getOffcloudCloudStatus).not.toHaveBeenCalled();
+	});
+
+	it('reports an empty resolution rather than handing back nothing', async () => {
+		mocks.addOffcloudCloud.mockResolvedValue(added('downloaded'));
+		mocks.exploreOffcloudCloud.mockResolvedValue([]);
+
+		const { error } = await getInstantIntent('oc-key', HASH, 0, '1.2.3.4', 'web', 'x', 'oc');
+
+		expect(error).toMatch(/No Offcloud files/);
+	});
+
+	it('treats an Offcloud link as already playable - there is nothing to unrestrict', async () => {
+		// Same energycdn objects Premiumize serves, measured keyless and any-IP.
+		const { intent } = await getIntent(
+			'oc-key',
+			`${CDN}/Big%20Buck%20Bunny.mp4`,
+			'1.2.3.4',
+			'web',
+			'x',
+			'oc'
+		);
+
+		expect(intent).toBe(`${CDN}/Big%20Buck%20Bunny.mp4`);
+		expect(mocks.unrestrictLink).not.toHaveBeenCalled();
+		expect(mocks.unlockLink).not.toHaveBeenCalled();
+	});
+
+	it('recognises oc as a watch service', () => {
+		expect(isWatchService('oc')).toBe(true);
+	});
+});
+
+describe('Debrid-Link intents', () => {
+	const HASH = 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c';
+	const HOST = 'https://seed41.debrid.link/dl/s37yg6wsgdilpqo80wwssulm';
+	const FILES = [
+		{ id: 'f0', name: 'poster.jpg', size: 310_380, downloadUrl: `${HOST}-1/poster.jpg` },
+		{
+			id: 'f1',
+			name: 'Big Buck Bunny.mp4',
+			size: 276_134_947,
+			downloadUrl: `${HOST}-2/Big+Buck+Bunny.mp4`,
+		},
+	];
+
+	const torrent = (status: number, over: Record<string, unknown> = {}) => ({
+		id: 's37yg6wsgdilpqo80wwssulm',
+		name: 'Big Buck Bunny',
+		hashString: HASH,
+		status,
+		downloadPercent: status >= 100 ? 100 : 37,
+		totalSize: 276_445_327,
+		files: FILES,
+		...over,
+	});
+
+	it('adds the FULL magnet, never the bare hash', async () => {
+		// A bare hash is only accepted when the content is already cached, so
+		// sending one here would turn "play this" into a probe that refuses
+		// anything Debrid-Link does not already hold.
+		mocks.addSeedboxTorrent.mockResolvedValue(torrent(100));
+
+		await getInstantIntent('dl-key', HASH, 0, '1.2.3.4', 'web', 'x', 'dl');
+
+		expect(mocks.addSeedboxTorrent).toHaveBeenCalledWith(
+			'dl-key',
+			`magnet:?xt=urn:btih:${HASH}`
+		);
+	});
+
+	it('plays a cached hash straight off the add response', async () => {
+		// Cached content answers synchronously complete with live URLs in ~150 ms,
+		// so one request goes from hash to playable.
+		mocks.addSeedboxTorrent.mockResolvedValue(torrent(100));
+
+		const { intent } = await getInstantIntent('dl-key', HASH, 0, '1.2.3.4', 'web', 'x', 'dl');
+
+		expect(intent).toBe(`${HOST}-2/Big+Buck+Bunny.mp4`);
+		expect(mocks.addSeedboxTorrent).toHaveBeenCalledTimes(1);
+	});
+
+	it('picks the biggest file, never files[0]', async () => {
+		// The list is the torrent's own order, so a first-file fallback hands the
+		// user the 310 KB poster.
+		mocks.addSeedboxTorrent.mockResolvedValue(torrent(100));
+
+		const { intent } = await getInstantIntent('dl-key', HASH, 0, '1.2.3.4', 'web', 'x', 'dl');
+
+		expect(intent).not.toBe(`${HOST}-1/poster.jpg`);
+	});
+
+	it('prefers the named file when the caller knows which one it wants', async () => {
+		mocks.addSeedboxTorrent.mockResolvedValue(torrent(100));
+
+		const { intent } = await getInstantIntent(
+			'dl-key',
+			HASH,
+			0,
+			'1.2.3.4',
+			'web',
+			'x',
+			'dl',
+			'poster.jpg'
+		);
+
+		expect(intent).toBe(`${HOST}-1/poster.jpg`);
+	});
+
+	it('says it is still downloading rather than polling or hanging', async () => {
+		// An unfinished Debrid-Link add is a real BitTorrent download, minutes
+		// long at best, so there is nothing worth waiting for in a watch tab.
+		mocks.addSeedboxTorrent.mockResolvedValue(torrent(4));
+
+		const { intent, error } = await getInstantIntent(
+			'dl-key',
+			HASH,
+			0,
+			'1.2.3.4',
+			'web',
+			'x',
+			'dl'
+		);
+
+		expect(intent).toBeUndefined();
+		expect(error).toBe(
+			'Debrid-Link is still downloading this (37%) — try again once it finishes'
+		);
+	});
+
+	it('treats a combined status flag as unfinished, never as done', async () => {
+		// The vendor's own sample carries `status: 6` (VERIFICATION|DOWNLOADING),
+		// which equals no single enum member - hence `>=`, never equality.
+		mocks.addSeedboxTorrent.mockResolvedValue(torrent(6));
+
+		const { error } = await getInstantIntent('dl-key', HASH, 0, '1.2.3.4', 'web', 'x', 'dl');
+
+		expect(error).toMatch(/still downloading/);
+	});
+
+	it('reports a refusal rather than throwing at the route', async () => {
+		mocks.addSeedboxTorrent.mockRejectedValue(new Error('maxTorrent'));
+
+		const { error } = await getInstantIntent('dl-key', HASH, 0, '1.2.3.4', 'web', 'x', 'dl');
+
+		expect(error).toBe('Failed to get Debrid-Link stream: maxTorrent');
+	});
+
+	it('serves a known Debrid-Link link directly - there is nothing to redeem', async () => {
+		// The torrent id is the whole capability: no token, no signature, no IP
+		// binding, and it keeps serving after the torrent is deleted.
+		const link = `${HOST}-2/Big+Buck+Bunny.mp4`;
+
+		const { intent } = await getIntent('dl-key', link, '1.2.3.4', 'web', 'x', 'dl');
+
+		expect(intent).toBe(link);
+		expect(mocks.unrestrictLink).not.toHaveBeenCalled();
+		expect(mocks.unlockLink).not.toHaveBeenCalled();
 	});
 });

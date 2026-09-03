@@ -26,7 +26,9 @@ import {
 	buildLinkWatchUrl,
 	getBiggestVideoFile,
 	openWatch,
+	pickInfoService,
 	pickWatchService,
+	WATCH_SERVICE_LABEL,
 	watchKeyFor,
 } from './watchService';
 
@@ -35,6 +37,7 @@ const cached = (over: Partial<Record<string, boolean>> = {}) => ({
 	adAvailable: false,
 	tbAvailable: false,
 	pmAvailable: false,
+	ocAvailable: false,
 	...over,
 });
 
@@ -503,5 +506,90 @@ describe('Premiumize in the watch order', () => {
 	it('hands the Premiumize key to the pm service', () => {
 		expect(watchKeyFor('pm', { rdKey: 'rd', premiumizeKey: 'pm' })).toBe('pm');
 		expect(watchKeyFor('pm', { rdKey: 'rd' })).toBeNull();
+	});
+});
+describe('Offcloud in the watch order', () => {
+	it('serves a stream when Offcloud is the only service that has it', () => {
+		expect(pickWatchService(cached({ ocAvailable: true }), { offcloudKey: 'oc' })).toBe('oc');
+	});
+
+	it('prefers Premiumize over Offcloud for the very same bytes', () => {
+		// The two serve the same energycdn objects, so the stream is identical
+		// either way - but Premiumize resolves it with one stateless `directdl`
+		// while Offcloud has to add the item and leaves a cloud entry behind.
+		// Given a free choice, take the path that mutates nothing.
+		expect(
+			pickWatchService(cached({ pmAvailable: true, ocAvailable: true }), {
+				premiumizeKey: 'pm',
+				offcloudKey: 'oc',
+			})
+		).toBe('pm');
+	});
+
+	it('never takes playback away from a service the user already had', () => {
+		const keys = {
+			rdKey: 'rd',
+			adKey: 'ad',
+			torboxKey: 'tb',
+			premiumizeKey: 'pm',
+			offcloudKey: 'oc',
+		};
+		expect(pickWatchService(cached({ rdAvailable: true, ocAvailable: true }), keys)).toBe('rd');
+		expect(pickWatchService(cached({ adAvailable: true, ocAvailable: true }), keys)).toBe('ad');
+		expect(pickWatchService(cached({ tbAvailable: true, ocAvailable: true }), keys)).toBe('tb');
+	});
+
+	it('ignores a cached Offcloud result when the user has no Offcloud key', () => {
+		expect(pickWatchService(cached({ ocAvailable: true }), { rdKey: 'rd' })).toBeNull();
+	});
+
+	it('hands the Offcloud key to the oc service', () => {
+		expect(watchKeyFor('oc', { rdKey: 'rd', offcloudKey: 'oc' })).toBe('oc');
+		expect(watchKeyFor('oc', { rdKey: 'rd' })).toBeNull();
+	});
+
+	it('falls back to Offcloud in the info modal when it is the only key', () => {
+		expect(pickInfoService(cached(), { offcloudKey: 'oc' })).toBe('oc');
+	});
+
+	it('labels the service by name', () => {
+		expect(WATCH_SERVICE_LABEL.oc).toBe('Offcloud');
+	});
+});
+
+describe('Debrid-Link in the watch order', () => {
+	it('is never chosen from a search result, because nothing can mark it cached', () => {
+		// Debrid-Link publishes no cache probe - `/seedbox/cached` is disabled and
+		// nothing replaced it - so no `dlAvailable` exists and `pickWatchService`
+		// has nothing to read. This asserts the absence deliberately: a future
+		// `dlAvailable: false` field would make this function answer "not cached"
+		// for content Debrid-Link is happily holding.
+		expect(pickWatchService(cached(), { debridLinkKey: 'dl' })).toBeNull();
+		expect(
+			pickWatchService(cached({ rdAvailable: true }), { rdKey: 'rd', debridLinkKey: 'dl' })
+		).toBe('rd');
+	});
+
+	it('does not become the info modal fallback either', () => {
+		// Same reason: `pickInfoService` agrees with `pickWatchService` by design,
+		// and the search-result modal has no Debrid-Link view to open.
+		expect(pickInfoService(cached(), { debridLinkKey: 'dl' })).toBeNull();
+	});
+
+	it('hands the Debrid-Link credential to the dl service', () => {
+		// Reached from a library row or a row the user has already added, never
+		// from a flag - so `watchKeyFor` still has to know about it.
+		expect(watchKeyFor('dl', { rdKey: 'rd', debridLinkKey: 'dl' })).toBe('dl');
+		expect(watchKeyFor('dl', { rdKey: 'rd' })).toBeNull();
+	});
+
+	it('never mistakes the Debrid-Link key for TorBox’s', () => {
+		// `watchKeyFor` falls through to `torboxKey`, so a missing branch would
+		// silently hand a Debrid-Link watch somebody else's credential.
+		expect(watchKeyFor('dl', { torboxKey: 'tb' })).toBeNull();
+	});
+
+	it('labels the service by name', () => {
+		expect(WATCH_SERVICE_LABEL.dl).toBe('Debrid-Link');
 	});
 });

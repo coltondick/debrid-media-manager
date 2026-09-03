@@ -73,6 +73,8 @@ export default function App({ Component, pageProps }: AppWithProvidersProps) {
 		'/alldebrid/login',
 		'/torbox/login',
 		'/premiumize/login',
+		'/offcloud/login',
+		'/debridlink/login',
 	];
 	const disableLibraryProvider =
 		authRoutes.includes(router.pathname) || Component.disableLibraryProvider === true;

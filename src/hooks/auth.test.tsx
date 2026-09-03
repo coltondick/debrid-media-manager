@@ -1,6 +1,17 @@
 import { renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetRealDebridStateForTests, useCurrentUser, useRealDebridAccessToken } from './auth';
+import {
+	__resetRealDebridStateForTests,
+	useCurrentUser,
+	useDebridLinkCredential,
+	useDebridLogin,
+	useRealDebridAccessToken,
+} from './auth';
+
+const routerPush = vi.fn();
+vi.mock('next/router', () => ({
+	useRouter: () => ({ push: routerPush, asPath: '/library' }),
+}));
 
 const {
 	mockGetRealDebridUser,
@@ -8,6 +19,9 @@ const {
 	mockGetAllDebridUser,
 	mockGetTorboxUser,
 	mockGetPremiumizeAccountInfo,
+	mockGetOffcloudAccountInfo,
+	mockGetDebridLinkAccountInfo,
+	mockRefreshDebridLinkToken,
 	mockGetTraktUser,
 } = vi.hoisted(() => ({
 	mockGetRealDebridUser: vi.fn(),
@@ -15,6 +29,9 @@ const {
 	mockGetAllDebridUser: vi.fn(),
 	mockGetTorboxUser: vi.fn(),
 	mockGetPremiumizeAccountInfo: vi.fn(),
+	mockGetOffcloudAccountInfo: vi.fn(),
+	mockGetDebridLinkAccountInfo: vi.fn(),
+	mockRefreshDebridLinkToken: vi.fn(),
 	mockGetTraktUser: vi.fn(),
 }));
 
@@ -33,6 +50,19 @@ vi.mock('../services/torbox', () => ({
 
 vi.mock('../services/premiumize', () => ({
 	getPremiumizeAccountInfo: mockGetPremiumizeAccountInfo,
+}));
+
+vi.mock('../services/offcloud', () => ({
+	getOffcloudAccountInfo: mockGetOffcloudAccountInfo,
+}));
+
+vi.mock('../services/debridLink', () => ({
+	getDebridLinkAccountInfo: mockGetDebridLinkAccountInfo,
+	BAD_TOKEN: 'badToken',
+}));
+
+vi.mock('../services/debridLinkOAuth', () => ({
+	refreshDebridLinkToken: mockRefreshDebridLinkToken,
 }));
 
 vi.mock('../services/trakt', () => ({
@@ -266,7 +296,7 @@ describe('usePremiumize via useCurrentUser', () => {
 	it('loads the account once a key is stored', async () => {
 		setStoredValue('pm:apiKey', 'pm-key');
 		mockGetPremiumizeAccountInfo.mockResolvedValue({
-			customer_id: '704233992',
+			customer_id: '100000002',
 			premium_until: 1789862400,
 			limit_used: 0.004,
 			space_used: 0,
@@ -277,7 +307,7 @@ describe('usePremiumize via useCurrentUser', () => {
 
 		await waitFor(() => expect(result.current.pmUser).not.toBeNull());
 		expect(result.current.hasPMAuth).toBe(true);
-		expect(result.current.pmUser?.customer_id).toBe('704233992');
+		expect(result.current.pmUser?.customer_id).toBe('100000002');
 		expect(mockGetPremiumizeAccountInfo).toHaveBeenCalledWith('pm-key');
 	});
 
@@ -303,7 +333,7 @@ describe('usePremiumize via useCurrentUser', () => {
 		setStoredValue('pm:apiKey', 'pasted-key');
 		setStoredValue('pm:accessToken', 'oauth-token');
 		mockGetPremiumizeAccountInfo.mockResolvedValue({
-			customer_id: '704233992',
+			customer_id: '100000002',
 			premium_until: 1789862400,
 			limit_used: 0,
 			space_used: 0,
@@ -319,7 +349,7 @@ describe('usePremiumize via useCurrentUser', () => {
 	it('falls back to the pasted key when there is no token', async () => {
 		setStoredValue('pm:apiKey', 'pasted-key');
 		mockGetPremiumizeAccountInfo.mockResolvedValue({
-			customer_id: '704233992',
+			customer_id: '100000002',
 			premium_until: 1789862400,
 			limit_used: 0,
 			space_used: 0,
@@ -330,6 +360,247 @@ describe('usePremiumize via useCurrentUser', () => {
 
 		await waitFor(() => expect(result.current.pmUser).not.toBeNull());
 		expect(mockGetPremiumizeAccountInfo).toHaveBeenCalledWith('pasted-key');
+	});
+});
+
+describe('useOffcloud via useCurrentUser', () => {
+	const account = {
+		user_id: '100000001',
+		email: 'me@example.com',
+		is_premium: true,
+		expiration_date: '2026-10-02',
+		can_download: true,
+	};
+
+	beforeEach(() => {
+		window.localStorage.clear();
+		__resetRealDebridStateForTests();
+		vi.clearAllMocks();
+	});
+
+	it('loads the account once a key is stored', async () => {
+		setStoredValue('oc:apiKey', 'oc-key');
+		mockGetOffcloudAccountInfo.mockResolvedValue(account);
+
+		const { result } = renderHook(() => useCurrentUser());
+
+		await waitFor(() => expect(result.current.ocUser).not.toBeNull());
+		expect(result.current.hasOCAuth).toBe(true);
+		expect(result.current.ocUser?.email).toBe('me@example.com');
+		expect(mockGetOffcloudAccountInfo).toHaveBeenCalledWith('oc-key');
+	});
+
+	it('does not call Offcloud without a key', async () => {
+		const { result } = renderHook(() => useCurrentUser());
+
+		await waitFor(() => expect(result.current.hasOCAuth).toBe(false));
+		expect(mockGetOffcloudAccountInfo).not.toHaveBeenCalled();
+	});
+
+	// NOAUTH covers a missing, malformed and revoked key alike, so the hook has
+	// nothing to distinguish and just has to settle on the error rather than
+	// leaving the home page waiting for a profile that will never arrive.
+	it('keeps the error rather than the user when the key is refused', async () => {
+		setStoredValue('oc:apiKey', 'bad-key');
+		mockGetOffcloudAccountInfo.mockRejectedValue(
+			Object.assign(new Error('Offcloud account/info failed (401)'), { code: 'NOAUTH' })
+		);
+
+		const { result } = renderHook(() => useCurrentUser());
+
+		await waitFor(() => expect(result.current.ocError).not.toBeNull());
+		expect(result.current.ocUser).toBeNull();
+	});
+});
+
+describe('useDebridLink via useCurrentUser', () => {
+	const account = {
+		username: 'ymsita',
+		email: 'p**d@deb*******k',
+		emailVerified: true,
+		accountType: 1,
+		premiumLeft: 3628800,
+		pts: 305,
+	};
+
+	beforeEach(() => {
+		window.localStorage.clear();
+		__resetRealDebridStateForTests();
+		vi.clearAllMocks();
+	});
+
+	it('loads the account from an OAuth access token', async () => {
+		setStoredValue('dl:accessToken', 'dl-oauth-token');
+		mockGetDebridLinkAccountInfo.mockResolvedValue(account);
+
+		const { result } = renderHook(() => useCurrentUser());
+
+		await waitFor(() => expect(result.current.dlUser).not.toBeNull());
+		expect(result.current.hasDLAuth).toBe(true);
+		expect(result.current.dlUser?.username).toBe('ymsita');
+		expect(mockGetDebridLinkAccountInfo).toHaveBeenCalledWith('dl-oauth-token');
+	});
+
+	it('falls back to a pasted API token when there is no OAuth token', async () => {
+		setStoredValue('dl:apiKey', 'dl-pasted-token');
+		mockGetDebridLinkAccountInfo.mockResolvedValue(account);
+
+		const { result } = renderHook(() => useCurrentUser());
+
+		await waitFor(() => expect(result.current.dlUser).not.toBeNull());
+		expect(mockGetDebridLinkAccountInfo).toHaveBeenCalledWith('dl-pasted-token');
+	});
+
+	// The OAuth token wins because it is the narrower credential - scoped to
+	// what DMM asked for and revocable on its own.
+	it('prefers the OAuth token when both credentials exist', () => {
+		setStoredValue('dl:accessToken', 'dl-oauth-token');
+		setStoredValue('dl:apiKey', 'dl-pasted-token');
+
+		const { result } = renderHook(() => useDebridLinkCredential());
+
+		expect(result.current).toBe('dl-oauth-token');
+	});
+
+	it('does not call Debrid-Link without a credential', async () => {
+		const { result } = renderHook(() => useCurrentUser());
+
+		await waitFor(() => expect(result.current.hasDLAuth).toBe(false));
+		expect(mockGetDebridLinkAccountInfo).not.toHaveBeenCalled();
+	});
+
+	// badToken is returned for an absent, malformed and expired token alike.
+	// Leaving the credentials in place would leave a session that fails every
+	// call it makes and never routes the user anywhere they can fix it.
+	it('drops every dl: credential when the token is refused', async () => {
+		setStoredValue('dl:accessToken', 'revoked');
+		setStoredValue('dl:refreshToken', 'also-dead');
+		setStoredValue('dl:tokenExpiry', Date.now() + 90 * 24 * 60 * 60 * 1000);
+		mockGetDebridLinkAccountInfo.mockRejectedValue(
+			Object.assign(new Error('The session not exist or expired.'), { code: 'badToken' })
+		);
+
+		const { result } = renderHook(() => useCurrentUser());
+
+		await waitFor(() => expect(window.localStorage.getItem('dl:accessToken')).toBeNull());
+		expect(window.localStorage.getItem('dl:refreshToken')).toBeNull();
+		expect(window.localStorage.getItem('dl:tokenExpiry')).toBeNull();
+		expect(result.current.dlUser).toBeNull();
+		expect(result.current.dlError).toBeNull();
+	});
+
+	it('keeps a non-auth failure as an error rather than signing the user out', async () => {
+		setStoredValue('dl:accessToken', 'dl-oauth-token');
+		mockGetDebridLinkAccountInfo.mockRejectedValue(
+			Object.assign(new Error('rate-limited for an hour'), { code: 'floodDetected' })
+		);
+
+		const { result } = renderHook(() => useCurrentUser());
+
+		await waitFor(() => expect(result.current.dlError).not.toBeNull());
+		expect(window.localStorage.getItem('dl:accessToken')).not.toBeNull();
+		expect(result.current.dlUser).toBeNull();
+	});
+
+	describe('lazy refresh', () => {
+		it('renews a token whose stored expiry is close', async () => {
+			setStoredValue('dl:accessToken', 'stale');
+			setStoredValue('dl:refreshToken', 'rtok');
+			setStoredValue('dl:tokenExpiry', Date.now() + 60 * 60 * 1000);
+			mockGetDebridLinkAccountInfo.mockResolvedValue(account);
+			mockRefreshDebridLinkToken.mockResolvedValue({
+				access_token: 'fresh',
+				token_type: 'Bearer',
+				expires_in: 604800,
+			});
+
+			renderHook(() => useCurrentUser());
+
+			await waitFor(() =>
+				expect(window.localStorage.getItem('dl:accessToken')).toBe(JSON.stringify('fresh'))
+			);
+			expect(mockRefreshDebridLinkToken).toHaveBeenCalledWith('rtok');
+			// The new absolute expiry, so the next mount does not renew again.
+			const expiry = JSON.parse(window.localStorage.getItem('dl:tokenExpiry') as string);
+			expect(expiry - Date.now()).toBeGreaterThan(6 * 24 * 60 * 60 * 1000);
+		});
+
+		// No timers, no scheduler: a token that is nowhere near expiry costs
+		// nothing at all.
+		it('leaves a token with plenty of life alone', async () => {
+			setStoredValue('dl:accessToken', 'good');
+			setStoredValue('dl:refreshToken', 'rtok');
+			setStoredValue('dl:tokenExpiry', Date.now() + 90 * 24 * 60 * 60 * 1000);
+			mockGetDebridLinkAccountInfo.mockResolvedValue(account);
+
+			const { result } = renderHook(() => useCurrentUser());
+
+			await waitFor(() => expect(result.current.dlUser).not.toBeNull());
+			expect(mockRefreshDebridLinkToken).not.toHaveBeenCalled();
+		});
+
+		it('does nothing when no expiry was ever recorded', async () => {
+			setStoredValue('dl:accessToken', 'good');
+			setStoredValue('dl:refreshToken', 'rtok');
+			mockGetDebridLinkAccountInfo.mockResolvedValue(account);
+
+			const { result } = renderHook(() => useCurrentUser());
+
+			await waitFor(() => expect(result.current.dlUser).not.toBeNull());
+			expect(mockRefreshDebridLinkToken).not.toHaveBeenCalled();
+		});
+
+		it('does nothing when the sign-in produced no refresh token', async () => {
+			setStoredValue('dl:accessToken', 'stale');
+			setStoredValue('dl:tokenExpiry', Date.now() + 60 * 60 * 1000);
+			mockGetDebridLinkAccountInfo.mockResolvedValue(account);
+
+			const { result } = renderHook(() => useCurrentUser());
+
+			await waitFor(() => expect(result.current.dlUser).not.toBeNull());
+			expect(mockRefreshDebridLinkToken).not.toHaveBeenCalled();
+		});
+
+		// A failed renewal is not the end of the session: the stored token may
+		// still be good, and the profile call is what settles it.
+		it('still loads the profile when the renewal fails', async () => {
+			setStoredValue('dl:accessToken', 'stale');
+			setStoredValue('dl:refreshToken', 'rtok');
+			setStoredValue('dl:tokenExpiry', Date.now() + 60 * 60 * 1000);
+			mockRefreshDebridLinkToken.mockRejectedValue(new Error('invalid_request'));
+			mockGetDebridLinkAccountInfo.mockResolvedValue(account);
+
+			const { result } = renderHook(() => useCurrentUser());
+
+			await waitFor(() => expect(result.current.dlUser).not.toBeNull());
+			expect(window.localStorage.getItem('dl:accessToken')).toBe(JSON.stringify('stale'));
+		});
+	});
+});
+
+describe('useDebridLogin', () => {
+	it('sends Offcloud sign-in to its own login page, carrying the return path', () => {
+		routerPush.mockClear();
+
+		const { result } = renderHook(() => useDebridLogin());
+		result.current.loginWithOffcloud();
+
+		expect(routerPush).toHaveBeenCalledWith({
+			pathname: '/offcloud/login',
+			query: { redirect: '/library' },
+		});
+	});
+
+	it('sends Debrid-Link sign-in to its own login page, carrying the return path', () => {
+		routerPush.mockClear();
+
+		const { result } = renderHook(() => useDebridLogin());
+		result.current.loginWithDebridLink();
+
+		expect(routerPush).toHaveBeenCalledWith({
+			pathname: '/debridlink/login',
+			query: { redirect: '/library' },
+		});
 	});
 });
 

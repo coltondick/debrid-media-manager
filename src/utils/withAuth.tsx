@@ -42,6 +42,24 @@ export const withAuth = <P extends object>(Component: ComponentType<P>) => {
 			return null;
 		});
 
+		// Without this an Offcloud-only user bounces to /start on every page,
+		// forever - they are signed in, and nothing here would know it.
+		const [ocKey] = useState(() => {
+			if (typeof window !== 'undefined') {
+				return localStorage.getItem('oc:apiKey');
+			}
+			return null;
+		});
+
+		// Either Debrid-Link credential counts as being signed in. Without this
+		// a Debrid-Link-only user bounces to /start on every page, forever.
+		const [dlKey] = useState(() => {
+			if (typeof window !== 'undefined') {
+				return localStorage.getItem('dl:accessToken') || localStorage.getItem('dl:apiKey');
+			}
+			return null;
+		});
+
 		// Check for refresh credentials
 		const [hasRefreshCredentials] = useState(() => {
 			if (typeof window !== 'undefined') {
@@ -64,6 +82,8 @@ export const withAuth = <P extends object>(Component: ComponentType<P>) => {
 				!adKey &&
 				!tbKey &&
 				!pmKey &&
+				!ocKey &&
+				!dlKey &&
 				router.pathname !== START_ROUTE &&
 				!router.pathname.endsWith(LOGIN_ROUTE) &&
 				!rdLoading &&
@@ -80,7 +100,18 @@ export const withAuth = <P extends object>(Component: ComponentType<P>) => {
 				}
 				setIsLoading(false);
 			}
-		}, [rdKey, rdLoading, rdIsRefreshing, hasRefreshCredentials, adKey, tbKey, pmKey, router]);
+		}, [
+			rdKey,
+			rdLoading,
+			rdIsRefreshing,
+			hasRefreshCredentials,
+			adKey,
+			tbKey,
+			pmKey,
+			ocKey,
+			dlKey,
+			router,
+		]);
 
 		// Loading screen state tracking
 		useEffect(() => {

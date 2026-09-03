@@ -3,13 +3,16 @@ import { AnimeService } from './anime';
 import { AvailabilityService } from './availability';
 import { CastService } from './cast';
 import { ContentRequestService } from './contentRequests';
+import { DebridLinkCastService } from './debridLinkCast';
 import { DebridUploaderMapService } from './debridUploaderMap';
 import { HashImdbService } from './hashImdb';
 import { HashSearchService } from './hashSearch';
 import { HistoryAggregationService } from './historyAggregation';
 import { ImdbSearchService } from './imdbSearch';
+import { NewznabApiCacheService } from './newznabApiCache';
 import { Nzb2rdMapService } from './nzb2rdMap';
 import { NzbSearchCacheService } from './nzbSearchCache';
+import { OffcloudCastService } from './offcloudCast';
 import { PremiumizeCastService } from './premiumizeCast';
 import { RdOperationalService } from './rdOperational';
 import { ReportService } from './report';
@@ -30,13 +33,16 @@ export {
 	AvailabilityService,
 	CastService,
 	ContentRequestService,
+	DebridLinkCastService,
 	DebridUploaderMapService,
 	HashImdbService,
 	HashSearchService,
 	HistoryAggregationService,
 	ImdbSearchService,
+	NewznabApiCacheService,
 	Nzb2rdMapService,
 	NzbSearchCacheService,
+	OffcloudCastService,
 	PremiumizeCastService,
 	RdOperationalService,
 	ReportService,
@@ -52,6 +58,7 @@ export {
 	ZurgKeysService,
 };
 
+export type { CachedNewznabApiSearch, CachedUsenetResult } from './newznabApiCache';
 export type { Nzb2rdWaiter } from './nzb2rdMap';
 export type { SponsorLookup } from './sponsors';
 export type { TransferMetaRecord, TransferMetaSource } from './transferMeta';

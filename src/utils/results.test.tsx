@@ -6,6 +6,7 @@ import {
 	btnIcon,
 	btnLabel,
 	fileSize,
+	isAvailable,
 	sortByBiggest,
 	sortByMean,
 	torrentPrefix,
@@ -121,6 +122,31 @@ describe('results utils', () => {
 			const result = torrentPrefix('ad:12345');
 			expect(result.props.className).toContain('bg-[#fbc730]');
 			expect(result.props.children).toBe('AD');
+		});
+
+		it('returns PM badge for Premiumize torrents', () => {
+			const result = torrentPrefix('pm:t12345');
+			expect(result.props.className).toContain('bg-[#aa0000]');
+			expect(result.props.children).toBe('PM');
+		});
+
+		it('returns OC badge for Offcloud torrents', () => {
+			// Offcloud orange, with black text on the solid fill - distinct from
+			// AllDebrid's amber, which is the whole point of the colour coding.
+			const result = torrentPrefix('oc:12345');
+			expect(result.props.className).toContain('bg-[#f97316]');
+			expect(result.props.className).toContain('text-black');
+			expect(result.props.children).toBe('OC');
+		});
+
+		it('returns DL badge for Debrid-Link torrents', () => {
+			// Debrid-Link sky, black text on the solid fill - far enough from
+			// TorBox indigo to tell apart in a badge row, which is the whole
+			// point of the colour coding.
+			const result = torrentPrefix('dl:seed-1');
+			expect(result.props.className).toContain('bg-[#38bdf8]');
+			expect(result.props.className).toContain('text-black');
+			expect(result.props.children).toBe('DL');
 		});
 
 		it('defaults to AD badge for unknown prefix', () => {
@@ -414,6 +440,34 @@ describe('results utils', () => {
 				'uncached-big',
 				'uncached-small',
 			]);
+		});
+	});
+	describe('isAvailable', () => {
+		const row = (over: Partial<SearchResult> = {}) =>
+			({
+				rdAvailable: false,
+				adAvailable: false,
+				tbAvailable: false,
+				pmAvailable: false,
+				ocAvailable: false,
+				...over,
+			}) as SearchResult;
+
+		it('counts every service, Offcloud included', () => {
+			// A row cached only in Offcloud is playable, so it must sort and filter
+			// as cached. Premiumize was missed here at first (97a28e0f).
+			expect(isAvailable(row({ ocAvailable: true }))).toBe(true);
+			expect(isAvailable(row({ pmAvailable: true }))).toBe(true);
+			expect(isAvailable(row({ rdAvailable: true }))).toBe(true);
+			expect(isAvailable(row())).toBe(false);
+		});
+
+		it('has no Debrid-Link flag to count, and must not grow one', () => {
+			// Debrid-Link publishes no cache probe, so a `dlAvailable` could only
+			// ever be false - and a permanently-false flag here would report a
+			// Debrid-Link user's playable rows as uncached in the sorts, the
+			// counters and `is:cached` alike. A stray field must change nothing.
+			expect(isAvailable(row({ dlAvailable: true } as Partial<SearchResult>))).toBe(false);
 		});
 	});
 });

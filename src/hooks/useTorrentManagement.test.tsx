@@ -11,6 +11,8 @@ const {
 	mockHandleAddAsMagnetInRd,
 	mockHandleAddAsMagnetInAd,
 	mockHandleAddAsMagnetInTb,
+	mockHandleAddAsMagnetInOc,
+	mockHandleAddAsMagnetInDl,
 	mockFetchAllDebrid,
 	mockConvertToUserTorrent,
 	mockGenerateTokenAndHash,
@@ -19,6 +21,8 @@ const {
 	mockHandleDeleteRdTorrent,
 	mockHandleDeleteAdTorrent,
 	mockHandleDeleteTbTorrent,
+	mockHandleDeleteOcTorrent,
+	mockHandleDeleteDlTorrent,
 } = vi.hoisted(() => ({
 	mockDb: {
 		all: vi.fn(),
@@ -33,6 +37,8 @@ const {
 	mockHandleAddAsMagnetInRd: vi.fn(),
 	mockHandleAddAsMagnetInAd: vi.fn(),
 	mockHandleAddAsMagnetInTb: vi.fn(),
+	mockHandleAddAsMagnetInOc: vi.fn(),
+	mockHandleAddAsMagnetInDl: vi.fn(),
 	mockFetchAllDebrid: vi.fn(),
 	mockConvertToUserTorrent: vi.fn(),
 	mockGenerateTokenAndHash: vi.fn(),
@@ -41,6 +47,8 @@ const {
 	mockHandleDeleteRdTorrent: vi.fn(),
 	mockHandleDeleteAdTorrent: vi.fn(),
 	mockHandleDeleteTbTorrent: vi.fn(),
+	mockHandleDeleteOcTorrent: vi.fn(),
+	mockHandleDeleteDlTorrent: vi.fn(),
 }));
 
 vi.mock('@/contexts/LibraryCacheContext', () => ({
@@ -58,6 +66,8 @@ vi.mock('@/utils/addMagnet', () => ({
 	handleAddAsMagnetInRd: mockHandleAddAsMagnetInRd,
 	handleAddAsMagnetInAd: mockHandleAddAsMagnetInAd,
 	handleAddAsMagnetInTb: mockHandleAddAsMagnetInTb,
+	handleAddAsMagnetInOc: mockHandleAddAsMagnetInOc,
+	handleAddAsMagnetInDl: mockHandleAddAsMagnetInDl,
 }));
 
 vi.mock('@/utils/fetchTorrents', () => ({
@@ -78,6 +88,8 @@ vi.mock('@/utils/deleteTorrent', () => ({
 	handleDeleteRdTorrent: mockHandleDeleteRdTorrent,
 	handleDeleteAdTorrent: mockHandleDeleteAdTorrent,
 	handleDeleteTbTorrent: mockHandleDeleteTbTorrent,
+	handleDeleteOcTorrent: mockHandleDeleteOcTorrent,
+	handleDeleteDlTorrent: mockHandleDeleteDlTorrent,
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -134,6 +146,7 @@ const createSearchResult = (overrides: Partial<any> = {}) => ({
 	rdAvailable: false,
 	tbAvailable: false,
 	pmAvailable: false,
+	ocAvailable: false,
 	adAvailable: false,
 	noVideos: false,
 	files: [],
@@ -201,6 +214,8 @@ describe('useTorrentManagement', () => {
 		mockHandleDeleteRdTorrent.mockResolvedValue(undefined);
 		mockHandleDeleteAdTorrent.mockResolvedValue(undefined);
 		mockHandleDeleteTbTorrent.mockResolvedValue(undefined);
+		mockHandleDeleteOcTorrent.mockResolvedValue(undefined);
+		mockHandleDeleteDlTorrent.mockResolvedValue(undefined);
 	});
 
 	const renderManagementHook = () =>
@@ -210,6 +225,8 @@ describe('useTorrentManagement', () => {
 				'ad-key',
 				'tb-key',
 				'pm-key',
+				'oc-key',
+				'dl-key',
 				'tt123',
 				currentResults,
 				setSearchResults
@@ -547,6 +564,138 @@ describe('useTorrentManagement', () => {
 				expect.stringContaining('over the 100 GB limit'),
 				expect.anything()
 			);
+		});
+	});
+	describe('Offcloud', () => {
+		it('stores the row the add handler builds and records its progress', async () => {
+			const row = makeUserTorrent({
+				id: 'oc:req-1',
+				hash: 'hash-1',
+				progress: 100,
+				status: UserTorrentStatus.finished,
+			});
+			mockHandleAddAsMagnetInOc.mockImplementation(async (_key, _hash, callback) => {
+				if (callback) await callback(row);
+			});
+			mockDb.all.mockResolvedValue([row]);
+			const { result } = renderManagementHook();
+
+			await act(async () => {
+				await result.current.addOc('hash-1');
+			});
+
+			expect(mockHandleAddAsMagnetInOc).toHaveBeenCalledWith(
+				'oc-key',
+				'hash-1',
+				expect.any(Function)
+			);
+			expect(mockDb.add).toHaveBeenCalledWith(row);
+			expect(mockAddTorrentToCache).toHaveBeenCalledWith(row);
+			expect(result.current.hashAndProgress['oc:hash-1']).toBe(100);
+		});
+
+		it('deletes only the oc: rows for a hash, leaving the other services alone', async () => {
+			mockDb.getAllByHash.mockResolvedValue([
+				makeUserTorrent({ id: 'oc:req-1', hash: 'hash-1' }),
+				makeUserTorrent({ id: 'pm:tabc', hash: 'hash-1' }),
+			]);
+			const { result } = renderManagementHook();
+
+			await act(async () => {
+				await result.current.deleteOc('hash-1');
+			});
+
+			expect(mockHandleDeleteOcTorrent).toHaveBeenCalledTimes(1);
+			expect(mockHandleDeleteOcTorrent).toHaveBeenCalledWith('oc-key', 'oc:req-1');
+			expect(mockDb.deleteByHash).toHaveBeenCalledWith('oc', 'hash-1');
+		});
+
+		it('does nothing at all without an Offcloud key', async () => {
+			const { result } = renderHook(() =>
+				useTorrentManagement('rd-key', null, null, null, null, null, 'tt123', [], vi.fn())
+			);
+
+			await act(async () => {
+				await result.current.addOc('hash-1');
+				await result.current.deleteOc('hash-1');
+			});
+
+			expect(mockHandleAddAsMagnetInOc).not.toHaveBeenCalled();
+			expect(mockHandleDeleteOcTorrent).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('Debrid-Link', () => {
+		it('stores the row the add handler builds and records its progress', async () => {
+			const row = makeUserTorrent({
+				id: 'dl:seed-1',
+				hash: 'hash-1',
+				progress: 100,
+				status: UserTorrentStatus.finished,
+			});
+			mockHandleAddAsMagnetInDl.mockImplementation(async (_key, _hash, callback) => {
+				if (callback) await callback(row);
+			});
+			mockDb.all.mockResolvedValue([row]);
+			const { result } = renderManagementHook();
+
+			await act(async () => {
+				await result.current.addDl('hash-1');
+			});
+
+			expect(mockHandleAddAsMagnetInDl).toHaveBeenCalledWith(
+				'dl-key',
+				'hash-1',
+				expect.any(Function)
+			);
+			expect(mockDb.add).toHaveBeenCalledWith(row);
+			expect(mockAddTorrentToCache).toHaveBeenCalledWith(row);
+			expect(result.current.hashAndProgress['dl:hash-1']).toBe(100);
+		});
+
+		it('adds without consulting any availability flag - there is none to consult', async () => {
+			// Debrid-Link publishes no cache probe, so `addDl` cannot be gated on
+			// one. This asserts the absence: an add on a row with every flag false
+			// still reaches the handler.
+			mockHandleAddAsMagnetInDl.mockResolvedValue(undefined);
+			currentResults = [createSearchResult({ hash: 'hash-1' })];
+			const { result } = renderManagementHook();
+
+			await act(async () => {
+				await result.current.addDl('hash-1');
+			});
+
+			expect(mockHandleAddAsMagnetInDl).toHaveBeenCalled();
+		});
+
+		it('deletes only the dl: rows for a hash, leaving the other services alone', async () => {
+			mockDb.getAllByHash.mockResolvedValue([
+				makeUserTorrent({ id: 'dl:seed-1', hash: 'hash-1' }),
+				makeUserTorrent({ id: 'oc:req-1', hash: 'hash-1' }),
+			]);
+			const { result } = renderManagementHook();
+
+			await act(async () => {
+				await result.current.deleteDl('hash-1');
+			});
+
+			expect(mockHandleDeleteDlTorrent).toHaveBeenCalledTimes(1);
+			expect(mockHandleDeleteDlTorrent).toHaveBeenCalledWith('dl-key', 'dl:seed-1');
+			expect(mockDb.deleteByHash).toHaveBeenCalledWith('dl', 'hash-1');
+		});
+
+		it('does nothing at all without a Debrid-Link credential', async () => {
+			const { result } = renderHook(() =>
+				useTorrentManagement('rd-key', null, null, null, null, null, 'tt123', [], vi.fn())
+			);
+
+			await act(async () => {
+				await result.current.addDl('hash-1');
+				await result.current.deleteDl('hash-1');
+			});
+
+			expect(mockHandleAddAsMagnetInDl).not.toHaveBeenCalled();
+			expect(mockHandleDeleteDlTorrent).not.toHaveBeenCalled();
 		});
 	});
 });

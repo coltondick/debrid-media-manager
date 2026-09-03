@@ -6,15 +6,19 @@ import {
 } from '@/utils/addMagnet';
 import { getAllDebridStatusText } from '@/utils/allDebridStatus';
 import { handleCopyOrDownloadMagnet } from '@/utils/copyMagnet';
+import { getDebridLinkStatusText } from '@/utils/debridLinkStatus';
 import { runDebridTransferToRd } from '@/utils/debridUploader';
 import {
 	handleDeleteAdTorrent,
+	handleDeleteDlTorrent,
+	handleDeleteOcTorrent,
 	handleDeletePmTorrent,
 	handleDeleteRdTorrent,
 	handleDeleteTbTorrent,
 } from '@/utils/deleteTorrent';
 import { handleShare } from '@/utils/hashList';
 import { normalize } from '@/utils/mediaId';
+import { getOffcloudStatusText } from '@/utils/offcloudStatus';
 import { getPremiumizeStatusText } from '@/utils/premiumizeStatus';
 import { getRealDebridStatusText } from '@/utils/realDebridStatus';
 import { torrentPrefix } from '@/utils/results';
@@ -51,6 +55,8 @@ interface TorrentRowProps {
 	adKey: string | null;
 	tbKey: string | null;
 	pmKey: string | null;
+	ocKey: string | null;
+	dlKey: string | null;
 	shouldDownloadMagnets: boolean;
 	hashGrouping: Record<string, number>;
 	titleGrouping: Record<string, number>;
@@ -72,6 +78,8 @@ function TorrentRow({
 	adKey,
 	tbKey,
 	pmKey,
+	ocKey,
+	dlKey,
 	shouldDownloadMagnets,
 	hashGrouping,
 	titleGrouping,
@@ -101,7 +109,8 @@ function TorrentRow({
 	// so the actions built on those are meaningless for it.
 	const isTbWebDownload = isWebDownloadRowId(torrent.id);
 	// Premiumize reports no info hash for a transfer, and none at all for content
-	// whose transfer record is gone, so magnet-shaped actions have nothing to work
+	// whose transfer record is gone; an Offcloud row created from a plain HTTP
+	// URL never had one to report. Magnet-shaped actions have nothing to work
 	// with on those rows.
 	const hasInfoHash = /^[a-fA-F0-9]{40}$/.test(torrent.hash);
 	// TorBox only: AllDebrid is withdrawn as a transfer source, because it answers
@@ -138,11 +147,17 @@ function TorrentRow({
 			return getTorBoxStatusText(torrent.serviceStatus);
 		} else if (torrent.id.startsWith('pm:')) {
 			return getPremiumizeStatusText(torrent.serviceStatus);
+		} else if (torrent.id.startsWith('oc:')) {
+			return getOffcloudStatusText(torrent.serviceStatus);
+		} else if (torrent.id.startsWith('dl:')) {
+			return getDebridLinkStatusText(torrent.serviceStatus);
 		}
 		return torrent.serviceStatus; // Fallback to raw status
 	};
 
-	const [castService, setCastService] = useState<'rd' | 'ad' | 'tb' | 'pm' | null>(null);
+	const [castService, setCastService] = useState<'rd' | 'ad' | 'tb' | 'pm' | 'oc' | 'dl' | null>(
+		null
+	);
 
 	// Handler for cast button click
 	const handleCastClick = async (imdbId?: string) => {
@@ -275,10 +290,91 @@ function TorrentRow({
 		}
 	};
 
+	const handleOcCastClick = async (imdbId?: string) => {
+		if (!ocKey || !torrent.id.startsWith('oc:')) return;
+
+		// Offcloud resolves a cast from the info hash alone, and a row created
+		// from a plain HTTP submission never had one - there is nothing to cast.
+		if (!torrent.hash) return;
+
+		setCastService('oc');
+		setIsCasting(true);
+		try {
+			// The request id rides along so the route can fall back to
+			// `cloud/explore` for an item this account holds but Offcloud's
+			// shared cache does not.
+			const requestId = torrent.id.substring(3);
+			const castUrl = `/api/stremio-oc/cast/library/${torrent.hash}?requestId=${encodeURIComponent(requestId)}${imdbId ? `&imdbId=${imdbId}` : ''}`;
+			const response = await fetch(castUrl, {
+				headers: { Authorization: `Bearer ${ocKey}` },
+			});
+			const data = await response.json();
+
+			if (data.status === 'need_imdb_id') {
+				setCastTorrentInfo(data.torrentInfo);
+				setShowCastModal(true);
+			} else if (data.status === 'error') {
+				toast.error(data.errorMessage || 'Failed to cast to Stremio');
+			} else if (data.status === 'success') {
+				window.location.href = data.redirectUrl;
+				toast.success('Opening in Stremio...');
+			}
+		} catch (error) {
+			console.error('Cast error:', error);
+			toast.error('Failed to cast to Stremio');
+		} finally {
+			setIsCasting(false);
+		}
+	};
+
+	const handleDlCastClick = async (imdbId?: string) => {
+		if (!dlKey || !torrent.id.startsWith('dl:')) return;
+
+		// The cast is addressed by hash, because play resolves by hash with the
+		// viewer's own credential. Debrid-Link reports `hashString` on every
+		// seedbox row, so unlike Premiumize and Offcloud there is no hashless
+		// case - but a row restored from an old cache could still lack one.
+		if (!torrent.hash) return;
+
+		setCastService('dl');
+		setIsCasting(true);
+		try {
+			// The torrent id rides along and is what the route prefers: listing a
+			// torrent by id costs no quota, while resolving by hash means an add,
+			// which spends one of the day's 50 torrents. Casting something the
+			// user is already looking at in their library should be free.
+			const torrentId = torrent.id.substring(3);
+			const castUrl = `/api/stremio-dl/cast/library/${torrent.hash}?torrentId=${encodeURIComponent(torrentId)}${imdbId ? `&imdbId=${imdbId}` : ''}`;
+			const response = await fetch(castUrl, {
+				headers: { Authorization: `Bearer ${dlKey}` },
+			});
+			const data = await response.json();
+
+			if (data.status === 'need_imdb_id') {
+				setCastTorrentInfo(data.torrentInfo);
+				setShowCastModal(true);
+			} else if (data.status === 'error') {
+				toast.error(data.errorMessage || 'Failed to cast to Stremio');
+			} else if (data.status === 'success') {
+				window.location.href = data.redirectUrl;
+				toast.success('Opening in Stremio...');
+			}
+		} catch (error) {
+			console.error('Cast error:', error);
+			toast.error('Failed to cast to Stremio');
+		} finally {
+			setIsCasting(false);
+		}
+	};
+
 	// Handler for IMDB ID selection from modal
 	const handleSelectImdbId = async (imdbId: string) => {
 		setShowCastModal(false);
-		if (castService === 'pm') {
+		if (castService === 'dl') {
+			await handleDlCastClick(imdbId);
+		} else if (castService === 'oc') {
+			await handleOcCastClick(imdbId);
+		} else if (castService === 'pm') {
 			await handlePmCastClick(imdbId);
 		} else if (castService === 'tb') {
 			await handleTbCastClick(imdbId);
@@ -390,7 +486,7 @@ function TorrentRow({
 							<br />
 						</>
 					)}
-					{[rdKey, adKey, tbKey, pmKey].filter(Boolean).length > 1 &&
+					{[rdKey, adKey, tbKey, pmKey, ocKey, dlKey].filter(Boolean).length > 1 &&
 						torrentPrefix(torrent.id)}{' '}
 					{torrent.filename === torrent.hash ? 'Magnet' : torrent.filename}
 					{torrent.filename === torrent.hash ||
@@ -481,6 +577,32 @@ function TorrentRow({
 							<Cast className="h-4 w-4 text-yellow-400" />
 						</button>
 					)}
+					{ocKey && torrent.id.startsWith('oc:') && torrent.hash && (
+						<button
+							title="Cast (OC)"
+							className="mb-2 mr-2 cursor-pointer text-orange-400 disabled:opacity-50"
+							onClick={(e) => {
+								e.stopPropagation();
+								handleOcCastClick();
+							}}
+							disabled={isCasting}
+						>
+							<Cast className="h-4 w-4 text-orange-400" />
+						</button>
+					)}
+					{dlKey && torrent.id.startsWith('dl:') && torrent.hash && (
+						<button
+							title="Cast (DL)"
+							className="mb-2 mr-2 cursor-pointer text-sky-400 disabled:opacity-50"
+							onClick={(e) => {
+								e.stopPropagation();
+								handleDlCastClick();
+							}}
+							disabled={isCasting}
+						>
+							<Cast className="h-4 w-4 text-sky-400" />
+						</button>
+					)}
 					{canSendToRd && (
 						<button
 							title="Send to Real-Debrid"
@@ -527,6 +649,16 @@ function TorrentRow({
 							}
 							if (pmKey && torrent.id.startsWith('pm:')) {
 								success = await handleDeletePmTorrent(pmKey, torrent.id);
+							}
+							if (ocKey && torrent.id.startsWith('oc:')) {
+								success = await handleDeleteOcTorrent(ocKey, torrent.id);
+							}
+							// Debrid-Link's remove never reports a failure - it echoes
+							// back whatever id it was asked about - so this is
+							// "asked", not "destroyed"; the next library listing is
+							// what settles it.
+							if (dlKey && torrent.id.startsWith('dl:')) {
+								success = await handleDeleteDlTorrent(dlKey, torrent.id);
 							}
 							if (success) onDelete(torrent.id);
 						}}

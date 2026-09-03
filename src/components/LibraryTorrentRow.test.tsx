@@ -6,6 +6,8 @@ import {
 } from '@/utils/addMagnet';
 import {
 	handleDeleteAdTorrent,
+	handleDeleteDlTorrent,
+	handleDeleteOcTorrent,
 	handleDeletePmTorrent,
 	handleDeleteRdTorrent,
 	handleDeleteTbTorrent,
@@ -53,6 +55,12 @@ const mockHandleRestartTbTorrent = handleRestartTbTorrent as MockedFunction<
 const mockHandleDeletePmTorrent = handleDeletePmTorrent as MockedFunction<
 	typeof handleDeletePmTorrent
 >;
+const mockHandleDeleteOcTorrent = handleDeleteOcTorrent as MockedFunction<
+	typeof handleDeleteOcTorrent
+>;
+const mockHandleDeleteDlTorrent = handleDeleteDlTorrent as MockedFunction<
+	typeof handleDeleteDlTorrent
+>;
 
 describe('LibraryTorrentRow Reinsert Functionality', () => {
 	const mockRouter = {
@@ -83,6 +91,8 @@ describe('LibraryTorrentRow Reinsert Functionality', () => {
 		adKey: null,
 		tbKey: null,
 		pmKey: null,
+		ocKey: null,
+		dlKey: null,
 		shouldDownloadMagnets: false,
 		hashGrouping: {},
 		titleGrouping: {},
@@ -143,6 +153,182 @@ describe('LibraryTorrentRow Reinsert Functionality', () => {
 			expect(url).toBe(`/api/stremio-pm/cast/library/${'f'.repeat(40)}`);
 			expect(url).not.toContain('test-pm-key');
 			expect(init.headers.Authorization).toBe('Bearer test-pm-key');
+		});
+	});
+
+	describe('Offcloud rows', () => {
+		const ocProps = (overrides: Partial<UserTorrent> = {}) => ({
+			...defaultProps,
+			rdKey: null,
+			ocKey: 'test-oc-key',
+			torrent: {
+				...mockTorrent,
+				id: 'oc:req123',
+				hash: 'a'.repeat(40),
+				serviceStatus: 'downloaded',
+				...overrides,
+			},
+		});
+
+		it('deletes through the Offcloud handler', async () => {
+			mockHandleDeleteOcTorrent.mockResolvedValueOnce(true);
+			const onDelete = vi.fn();
+
+			const { container } = render(<LibraryTorrentRow {...ocProps()} onDelete={onDelete} />);
+			fireEvent.click(container.querySelector('button[title="Delete"]')!);
+
+			await waitFor(() =>
+				expect(mockHandleDeleteOcTorrent).toHaveBeenCalledWith('test-oc-key', 'oc:req123')
+			);
+			expect(onDelete).toHaveBeenCalledWith('oc:req123');
+		});
+
+		// `created` is where a zombie sits forever, so the row has to say so
+		// rather than showing Offcloud's raw enum.
+		it('renders the friendly status text for an unstarted item', () => {
+			render(
+				<LibraryTorrentRow
+					{...ocProps({
+						serviceStatus: 'created',
+						status: UserTorrentStatus.waiting,
+						filename: 'Magnet',
+					})}
+				/>
+			);
+			expect(screen.getByText(/Queued/)).toBeInTheDocument();
+		});
+
+		// A plain HTTP submission genuinely has no info hash, the same shape a
+		// hashless Premiumize row already has.
+		it('hides the magnet-shaped actions when the row has no info hash', () => {
+			const { container } = render(<LibraryTorrentRow {...ocProps({ hash: '' })} />);
+			expect(container.querySelector('button[title="Share"]')).not.toBeInTheDocument();
+			expect(
+				container.querySelector('button[title="Copy magnet url"]')
+			).not.toBeInTheDocument();
+		});
+
+		it('renders a cast button for a row that reports an info hash', () => {
+			const { container } = render(<LibraryTorrentRow {...ocProps()} />);
+			expect(container.querySelector('button[title="Cast (OC)"]')).toBeInTheDocument();
+		});
+
+		// A plain HTTP submission never had an info hash, and Offcloud resolves a
+		// cast from the hash alone - there is nothing to cast.
+		it('hides the cast button when the row has no info hash', () => {
+			const { container } = render(<LibraryTorrentRow {...ocProps({ hash: '' })} />);
+			expect(container.querySelector('button[title="Cast (OC)"]')).not.toBeInTheDocument();
+		});
+
+		it('hides the cast button without an Offcloud key', () => {
+			const { container } = render(<LibraryTorrentRow {...ocProps()} ocKey={null} />);
+			expect(container.querySelector('button[title="Cast (OC)"]')).not.toBeInTheDocument();
+		});
+
+		it('casts with the key as a bearer token and the request id in the URL', async () => {
+			const fetchMock = vi.fn().mockResolvedValue({
+				json: async () => ({ status: 'success', redirectUrl: '/x' }),
+			});
+			vi.stubGlobal('fetch', fetchMock);
+
+			const { container } = render(<LibraryTorrentRow {...ocProps()} />);
+			fireEvent.click(container.querySelector('button[title="Cast (OC)"]')!);
+			await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+			const [url, init] = fetchMock.mock.calls[0];
+			expect(url).toBe(`/api/stremio-oc/cast/library/${'a'.repeat(40)}?requestId=req123`);
+			// The Offcloud key is the whole account, so it never reaches a URL.
+			expect(url).not.toContain('test-oc-key');
+			expect(init.headers.Authorization).toBe('Bearer test-oc-key');
+		});
+	});
+
+	describe('Debrid-Link rows', () => {
+		const dlProps = (overrides: Partial<UserTorrent> = {}) => ({
+			...defaultProps,
+			rdKey: null,
+			dlKey: 'test-dl-key',
+			torrent: {
+				...mockTorrent,
+				id: 'dl:seed-1',
+				hash: 'b'.repeat(40),
+				serviceStatus: '100',
+				...overrides,
+			},
+		});
+
+		it('deletes through the Debrid-Link handler', async () => {
+			mockHandleDeleteDlTorrent.mockResolvedValueOnce(true);
+			const onDelete = vi.fn();
+
+			const { container } = render(<LibraryTorrentRow {...dlProps()} onDelete={onDelete} />);
+			fireEvent.click(container.querySelector('button[title="Delete"]')!);
+
+			await waitFor(() =>
+				expect(mockHandleDeleteDlTorrent).toHaveBeenCalledWith('test-dl-key', 'dl:seed-1')
+			);
+			expect(onDelete).toHaveBeenCalledWith('dl:seed-1');
+		});
+
+		// The row stores the raw numeric status, and `6` is
+		// VERIFICATION|DOWNLOADING - a status no equality ladder would name.
+		it('names a combined status flag rather than showing the number', () => {
+			render(
+				<LibraryTorrentRow
+					{...dlProps({
+						serviceStatus: '6',
+						status: UserTorrentStatus.downloading,
+						filename: 'Magnet',
+					})}
+				/>
+			);
+			expect(screen.getByText(/Downloading/)).toBeInTheDocument();
+		});
+
+		// `hashString` rides on every seedbox row, so the magnet-shaped actions
+		// are always available - unlike Premiumize's and Offcloud's.
+		it('always offers the magnet-shaped actions', () => {
+			const { container } = render(<LibraryTorrentRow {...dlProps()} />);
+			expect(container.querySelector('button[title="Share"]')).toBeInTheDocument();
+			expect(container.querySelector('button[title="Copy magnet url"]')).toBeInTheDocument();
+		});
+
+		it('renders a cast button for a row that reports an info hash', () => {
+			const { container } = render(<LibraryTorrentRow {...dlProps()} />);
+			expect(container.querySelector('button[title="Cast (DL)"]')).toBeInTheDocument();
+		});
+
+		// Every seedbox row carries `hashString`, so this is a row restored from
+		// an old cache rather than a shape Debrid-Link produces - and a cast is
+		// addressed by hash, so there is nothing to cast.
+		it('hides the cast button when the row has no info hash', () => {
+			const { container } = render(<LibraryTorrentRow {...dlProps({ hash: '' })} />);
+			expect(container.querySelector('button[title="Cast (DL)"]')).not.toBeInTheDocument();
+		});
+
+		it('hides the cast button without a Debrid-Link credential', () => {
+			const { container } = render(<LibraryTorrentRow {...dlProps()} dlKey={null} />);
+			expect(container.querySelector('button[title="Cast (DL)"]')).not.toBeInTheDocument();
+		});
+
+		// The torrent id goes over because listing by id costs no quota, while
+		// resolving by hash means an add - one of the day's 50 torrents.
+		it('casts with the credential as a bearer token and the torrent id in the URL', async () => {
+			const fetchMock = vi.fn().mockResolvedValue({
+				json: async () => ({ status: 'success', redirectUrl: '/x' }),
+			});
+			vi.stubGlobal('fetch', fetchMock);
+
+			const { container } = render(<LibraryTorrentRow {...dlProps()} />);
+			fireEvent.click(container.querySelector('button[title="Cast (DL)"]')!);
+			await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+			const [url, init] = fetchMock.mock.calls[0];
+			expect(url).toBe(`/api/stremio-dl/cast/library/${'b'.repeat(40)}?torrentId=seed-1`);
+			// Debrid-Link accepts `?access_token=` upstream, so a credential must
+			// never reach a URL.
+			expect(url).not.toContain('test-dl-key');
+			expect(init.headers.Authorization).toBe('Bearer test-dl-key');
 		});
 	});
 

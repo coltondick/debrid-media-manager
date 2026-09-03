@@ -24,11 +24,13 @@ const {
 		routerQuery: { imdbid: 'tt1111111' } as { imdbid: string },
 		torrentUrls: [] as string[],
 		// Mutable so a test can hand the page a different combination of keys
-		authKeys: { rd: 'rd-token', ad: null, tb: null, pm: null } as {
+		authKeys: { rd: 'rd-token', ad: null, tb: null, pm: null, oc: null, dl: null } as {
 			rd: string | null;
 			ad: string | null;
 			tb: string | null;
 			pm: string | null;
+			oc: string | null;
+			dl: string | null;
 		},
 		torrentResults: [] as any[],
 		searchResultsProps: { current: null as any },
@@ -40,9 +42,15 @@ const {
 			addRd: vi.fn(),
 			addAd: vi.fn(),
 			addTb: vi.fn(),
+			addPm: vi.fn(),
+			addOc: vi.fn(),
+			addDl: vi.fn(),
 			deleteRd: vi.fn(),
 			deleteAd: vi.fn(),
 			deleteTb: vi.fn(),
+			deletePm: vi.fn(),
+			deleteOc: vi.fn(),
+			deleteDl: vi.fn(),
 		},
 	};
 });
@@ -81,6 +89,8 @@ vi.mock('@/hooks/auth', () => ({
 	useAllDebridApiKey: () => authKeys.ad,
 	useTorBoxAccessToken: () => authKeys.tb,
 	usePremiumizeCredential: () => authKeys.pm,
+	useOffcloudApiKey: () => authKeys.oc,
+	useDebridLinkCredential: () => authKeys.dl,
 }));
 
 vi.mock('@/hooks/useExternalSources', () => ({
@@ -121,6 +131,7 @@ vi.mock('@/utils/browserStorage', () => ({
 	getLocalStorageBoolean: (_key: string, defaultValue: boolean) => defaultValue,
 	getLocalStorageItemOrDefault: (key: string, defaultValue: any) =>
 		key === 'settings:movieYearFilter' ? '1' : defaultValue,
+	hideRdBlockedTorrentsDefault: (fallback: boolean) => fallback,
 }));
 
 const { generateTokenAndHashMock } = vi.hoisted(() => ({
@@ -211,6 +222,8 @@ describe('Movie search page across client-side navigation', () => {
 		authKeys.ad = null;
 		authKeys.tb = null;
 		authKeys.pm = null;
+		authKeys.oc = null;
+		authKeys.dl = null;
 
 		axiosGetMock.mockImplementation((url: string) => {
 			const infoMatch = url.match(/\/api\/info\/movie\?imdbid=(tt\d+)/);

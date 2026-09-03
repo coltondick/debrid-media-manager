@@ -1,4 +1,6 @@
 import { deleteMagnet as deleteAdTorrent } from '@/services/allDebrid';
+import { deleteSeedboxTorrents } from '@/services/debridLink';
+import { removeOffcloudCloud } from '@/services/offcloud';
 import {
 	deletePremiumizeFolder,
 	deletePremiumizeItem,
@@ -10,6 +12,8 @@ import toast from 'react-hot-toast';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	handleDeleteAdTorrent,
+	handleDeleteDlTorrent,
+	handleDeleteOcTorrent,
 	handleDeletePmTorrent,
 	handleDeleteRdTorrent,
 	handleDeleteTbTorrent,
@@ -20,6 +24,8 @@ vi.mock('@/services/allDebrid');
 vi.mock('@/services/realDebrid');
 vi.mock('@/services/torbox');
 vi.mock('@/services/premiumize');
+vi.mock('@/services/offcloud');
+vi.mock('@/services/debridLink');
 vi.mock('react-hot-toast', () => {
 	const fn: any = vi.fn((message: string) => {});
 	fn.error = vi.fn();
@@ -438,6 +444,100 @@ describe('deleteTorrent utilities', () => {
 			expect(toast.error).toHaveBeenCalledWith(
 				'Premiumize error: An unknown error occurred.'
 			);
+		});
+	});
+	describe('handleDeleteOcTorrent', () => {
+		const ocKey = 'test-oc-key';
+
+		it('removes the item behind an oc: row', async () => {
+			vi.mocked(removeOffcloudCloud).mockResolvedValue({ success: true });
+
+			const ok = await handleDeleteOcTorrent(ocKey, 'oc:pQR7Zs3');
+
+			expect(ok).toBe(true);
+			expect(removeOffcloudCloud).toHaveBeenCalledWith(ocKey, 'pQR7Zs3');
+			expect(toast).toHaveBeenCalledWith(
+				'Deleted oc:pQR7Zs3 from Offcloud.',
+				expect.any(Object)
+			);
+		});
+
+		it('never builds the destructive URL itself - Offcloud deletes on a GET', async () => {
+			// `GET /api/cloud/remove/<id>` destroys the item, so anything that
+			// resolves links would delete a user's content by following one. The
+			// request id goes to the client and the URL is never assembled, logged
+			// or rendered here.
+			vi.mocked(removeOffcloudCloud).mockResolvedValue({ success: true });
+
+			await handleDeleteOcTorrent(ocKey, 'oc:pQR7Zs3', true);
+
+			const toasted = vi.mocked(toast).mock.calls.flat().join(' ');
+			expect(toasted).not.toContain('cloud/remove');
+			expect(toasted).not.toContain('offcloud.com');
+			expect(toast).not.toHaveBeenCalled();
+		});
+
+		it('refuses a row that is not an Offcloud row', async () => {
+			const ok = await handleDeleteOcTorrent(ocKey, 'pm:tabc');
+
+			expect(ok).toBe(false);
+			expect(removeOffcloudCloud).not.toHaveBeenCalled();
+		});
+
+		it('reports a failure without throwing', async () => {
+			vi.mocked(removeOffcloudCloud).mockRejectedValue(new Error('NOAUTH'));
+
+			expect(await handleDeleteOcTorrent(ocKey, 'oc:pQR7Zs3')).toBe(false);
+			expect(toast.error).toHaveBeenCalledWith('Offcloud error: NOAUTH');
+		});
+	});
+
+	describe('handleDeleteDlTorrent', () => {
+		const dlKey = 'test-dl-key';
+
+		it('removes the torrent behind a dl: row', async () => {
+			vi.mocked(deleteSeedboxTorrents).mockResolvedValue(['seed-1']);
+
+			const ok = await handleDeleteDlTorrent(dlKey, 'dl:seed-1');
+
+			expect(ok).toBe(true);
+			expect(deleteSeedboxTorrents).toHaveBeenCalledWith(dlKey, ['seed-1']);
+			expect(toast).toHaveBeenCalledWith(
+				'Deleted dl:seed-1 from Debrid-Link.',
+				expect.any(Object)
+			);
+		});
+
+		it('reports only that the removal was attempted - Debrid-Link never fails one', async () => {
+			// `DELETE /seedbox/<garbage>/remove` answers success and echoes the id
+			// back, so there is no answer here that could mean "it was really
+			// there". The echoed value is deliberately not checked against the
+			// request: doing so would read as verification it cannot provide.
+			vi.mocked(deleteSeedboxTorrents).mockResolvedValue(['not-the-id-we-sent']);
+
+			expect(await handleDeleteDlTorrent(dlKey, 'dl:seed-1')).toBe(true);
+		});
+
+		it('refuses a row that is not a Debrid-Link row', async () => {
+			const ok = await handleDeleteDlTorrent(dlKey, 'oc:req-1');
+
+			expect(ok).toBe(false);
+			expect(deleteSeedboxTorrents).not.toHaveBeenCalled();
+		});
+
+		it('stays quiet when asked to', async () => {
+			vi.mocked(deleteSeedboxTorrents).mockResolvedValue(['seed-1']);
+
+			await handleDeleteDlTorrent(dlKey, 'dl:seed-1', true);
+
+			expect(toast).not.toHaveBeenCalled();
+		});
+
+		it('reports a failure without throwing', async () => {
+			vi.mocked(deleteSeedboxTorrents).mockRejectedValue(new Error('badToken'));
+
+			expect(await handleDeleteDlTorrent(dlKey, 'dl:seed-1')).toBe(false);
+			expect(toast.error).toHaveBeenCalledWith('Debrid-Link error: badToken');
 		});
 	});
 });

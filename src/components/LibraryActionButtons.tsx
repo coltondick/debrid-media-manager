@@ -8,7 +8,7 @@ interface LibraryActionButtonsProps {
 	onGenerateHashlist: () => void;
 	onDeleteShownTorrents: () => void;
 	onAddMagnet: (service: string) => void;
-	onLocalRestore: (service: 'rd' | 'ad' | 'tb' | 'pm') => Promise<void>;
+	onLocalRestore: (service: 'rd' | 'ad' | 'tb' | 'pm' | 'oc' | 'dl') => Promise<void>;
 	onLocalBackup: () => Promise<void>;
 	onDedupeBySize: () => void;
 	onDedupeByRecency: () => void;
@@ -18,6 +18,8 @@ interface LibraryActionButtonsProps {
 	adKey: string | null;
 	tbKey?: string | null;
 	pmKey?: string | null;
+	ocKey?: string | null;
+	dlKey?: string | null;
 	showDedupe: boolean;
 	showHashCombine: boolean;
 }
@@ -39,6 +41,8 @@ export default function LibraryActionButtons({
 	adKey,
 	tbKey,
 	pmKey,
+	ocKey,
+	dlKey,
 	showDedupe,
 	showHashCombine,
 }: LibraryActionButtonsProps) {
@@ -117,6 +121,32 @@ export default function LibraryActionButtons({
 					<LibraryButton variant="indigo" onClick={() => onLocalRestore('pm')}>
 						<Wrench className="mr-1 inline-block h-4 w-4 text-indigo-500" />
 						PM Restore
+					</LibraryButton>
+				</>
+			)}
+
+			{ocKey && (
+				<>
+					<LibraryButton variant="teal" onClick={() => onAddMagnet('oc')}>
+						<Link2 className="mr-1 inline-block h-4 w-4 text-teal-500" />
+						OC&nbsp;Add
+					</LibraryButton>
+					<LibraryButton variant="indigo" onClick={() => onLocalRestore('oc')}>
+						<Wrench className="mr-1 inline-block h-4 w-4 text-indigo-500" />
+						OC Restore
+					</LibraryButton>
+				</>
+			)}
+
+			{dlKey && (
+				<>
+					<LibraryButton variant="teal" onClick={() => onAddMagnet('dl')}>
+						<Link2 className="mr-1 inline-block h-4 w-4 text-teal-500" />
+						DL&nbsp;Add
+					</LibraryButton>
+					<LibraryButton variant="indigo" onClick={() => onLocalRestore('dl')}>
+						<Wrench className="mr-1 inline-block h-4 w-4 text-indigo-500" />
+						DL Restore
 					</LibraryButton>
 				</>
 			)}

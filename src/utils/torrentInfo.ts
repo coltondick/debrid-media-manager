@@ -1,5 +1,7 @@
 import {
 	showInfoForAD,
+	showInfoForDL,
+	showInfoForOC,
 	showInfoForPM,
 	showInfoForRD,
 	showInfoForTB,
@@ -291,4 +293,48 @@ export async function handleShowInfoForPM(
 
 	const player = window.localStorage.getItem('settings:player') || defaultPlayer;
 	await showInfoForPM(player, pmKey, t, shouldDownloadMagnets, { onDeletePm });
+}
+
+export async function handleShowInfoForOC(
+	t: UserTorrent,
+	ocKey: string,
+	setUserTorrentsList: (fn: (prev: UserTorrent[]) => UserTorrent[]) => void,
+	setSelectedTorrents: Dispatch<SetStateAction<Set<string>>>,
+	shouldDownloadMagnets?: boolean
+) {
+	const onDeleteOc = async (key: string, id: string) => {
+		const { handleDeleteOcTorrent } = await import('./deleteTorrent');
+		await handleDeleteOcTorrent(key, id);
+		setUserTorrentsList((prev) => prev.filter((torrent) => torrent.id !== id));
+		setSelectedTorrents((prev) => {
+			prev.delete(id);
+			return new Set(prev);
+		});
+		Modal.close();
+	};
+
+	const player = window.localStorage.getItem('settings:player') || defaultPlayer;
+	await showInfoForOC(player, ocKey, t, shouldDownloadMagnets, { onDeleteOc });
+}
+
+export async function handleShowInfoForDL(
+	t: UserTorrent,
+	dlKey: string,
+	setUserTorrentsList: (fn: (prev: UserTorrent[]) => UserTorrent[]) => void,
+	setSelectedTorrents: Dispatch<SetStateAction<Set<string>>>,
+	shouldDownloadMagnets?: boolean
+) {
+	const onDeleteDl = async (key: string, id: string) => {
+		const { handleDeleteDlTorrent } = await import('./deleteTorrent');
+		await handleDeleteDlTorrent(key, id);
+		setUserTorrentsList((prev) => prev.filter((torrent) => torrent.id !== id));
+		setSelectedTorrents((prev) => {
+			prev.delete(id);
+			return new Set(prev);
+		});
+		Modal.close();
+	};
+
+	const player = window.localStorage.getItem('settings:player') || defaultPlayer;
+	await showInfoForDL(player, dlKey, t, shouldDownloadMagnets, { onDeleteDl });
 }

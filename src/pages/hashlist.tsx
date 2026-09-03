@@ -1,6 +1,8 @@
 import { useLibraryCache } from '@/contexts/LibraryCacheContext';
 import {
 	useAllDebridApiKey,
+	useDebridLinkCredential,
+	useOffcloudApiKey,
 	usePremiumizeCredential,
 	useRealDebridAccessToken,
 	useTorBoxAccessToken,
@@ -15,10 +17,18 @@ import {
 } from '@/services/torbox';
 import { TorBoxTorrentInfo } from '@/services/types';
 import UserTorrentDB from '@/torrent/db';
-import { handleAddAsMagnetInPm, handleAddAsMagnetInRd } from '@/utils/addMagnet';
+import {
+	handleAddAsMagnetInDl,
+	handleAddAsMagnetInOc,
+	handleAddAsMagnetInPm,
+	handleAddAsMagnetInRd,
+	handleAddMultipleHashesInDl,
+} from '@/utils/addMagnet';
 import { runConcurrentFunctions } from '@/utils/batch';
 import {
 	handleDeleteAdTorrent,
+	handleDeleteDlTorrent,
+	handleDeleteOcTorrent,
 	handleDeletePmTorrent,
 	handleDeleteRdTorrent,
 	handleDeleteTbTorrent,
@@ -29,6 +39,7 @@ import {
 	convertToUserTorrent,
 } from '@/utils/fetchTorrents';
 import {
+	checkAvailabilityOc2,
 	checkAvailabilityPm2,
 	checkDatabaseAvailabilityAd2,
 	checkDatabaseAvailabilityRd2,
@@ -82,6 +93,8 @@ function HashlistPage() {
 	const adKey = useAllDebridApiKey();
 	const tbKey = useTorBoxAccessToken();
 	const pmKey = usePremiumizeCredential();
+	const ocKey = useOffcloudApiKey();
+	const dlKey = useDebridLinkCredential();
 	const { addTorrent: addToCache, removeTorrent: removeFromCache } = useLibraryCache();
 
 	const [currentPage, setCurrentPage] = useState(1);
@@ -174,7 +187,7 @@ function HashlistPage() {
 		if (userTorrentsList.length !== 0) return;
 		initialize();
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [rdKey, adKey, tbKey, pmKey]);
+	}, [rdKey, adKey, tbKey, pmKey, ocKey, dlKey]);
 
 	async function decodeJsonStringFromUrl(): Promise<string> {
 		const hash = window.location.hash;
@@ -214,6 +227,7 @@ function HashlistPage() {
 						adAvailable: false,
 						tbAvailable: false,
 						pmAvailable: false,
+						ocAvailable: false,
 						noVideos: false,
 						files: [],
 						...torrent,
@@ -258,6 +272,19 @@ function HashlistPage() {
 					checkDatabaseAvailabilityTb2(tbKey, hashArr, setUserTorrentsList)
 				);
 			if (pmKey) wrapLoading('PM', checkAvailabilityPm2(pmKey, hashArr, setUserTorrentsList));
+			// Offcloud's cache is measured to be Premiumize's, hash for hash, but the
+			// probes stay independent: one vendor being down is not the other's
+			// answer, and a user may hold only one of the two keys.
+			if (ocKey) wrapLoading('OC', checkAvailabilityOc2(ocKey, hashArr, setUserTorrentsList));
+			// **No Debrid-Link probe, and none is possible.** `/seedbox/cached` is
+			// disabled and nothing replaced it, so the only cache question
+			// Debrid-Link answers is a mutating add. A `dlAvailable` flag would
+			// therefore have to read false for every row whether or not
+			// Debrid-Link holds it, which is worse than no flag at all - it would
+			// hide rows behind "instantly available only" that Debrid-Link would
+			// have served. That is also why `dlKey` is absent from that filter's
+			// OR-chain below: with only a Debrid-Link key there is nothing to
+			// filter on, so nothing is filtered.
 		} catch (error) {
 			console.error('Error fetching user torrents list:', error);
 			setUserTorrentsList([]);
@@ -340,9 +367,14 @@ function HashlistPage() {
 		tmpList = tmpList.filter((t, i, self) => self.findIndex((s) => s.hash === t.hash) === i);
 
 		// Filter for instantly available torrents if enabled and keys are present
-		if (showOnlyAvailable && (rdKey || adKey || tbKey || pmKey)) {
+		if (showOnlyAvailable && (rdKey || adKey || tbKey || pmKey || ocKey)) {
 			tmpList = tmpList.filter(
-				(t) => t.rdAvailable || t.adAvailable || t.tbAvailable || t.pmAvailable
+				(t) =>
+					t.rdAvailable ||
+					t.adAvailable ||
+					t.tbAvailable ||
+					t.pmAvailable ||
+					t.ocAvailable
 			);
 		}
 
@@ -749,6 +781,138 @@ function HashlistPage() {
 		}
 	}
 
+	/**
+	 * Adds one row to Debrid-Link, as a **full magnet**.
+	 *
+	 * The bulk button below deliberately sends bare hashes, because one click
+	 * there means hundreds of adds against a 50-a-day quota. A per-row click is
+	 * one release the user picked, which is the same intent the search page's
+	 * button carries - so it downloads for real rather than being refused with
+	 * `notAddTorrent` for not being cached.
+	 */
+	async function addDl(hash: string) {
+		try {
+			await handleAddAsMagnetInDl(dlKey!, hash, async (userTorrent) => {
+				await torrentDB.addAll([userTorrent]);
+				addToCache(userTorrent);
+				await fetchHashAndProgress(hash);
+			});
+		} catch {
+			// handleAddAsMagnetInDl reports its own failure
+		}
+	}
+
+	async function deleteDl(hash: string) {
+		const torrents = await torrentDB.getAllByHash(hash);
+		for (const t of torrents) {
+			if (!t.id.startsWith('dl:')) continue;
+			// Debrid-Link's remove never reports a failure, so the local row goes
+			// either way and the next library listing is what settles it.
+			await handleDeleteDlTorrent(dlKey!, t.id);
+			await torrentDB.deleteByHash('dl', hash);
+			removeFromCache(t.id);
+			setHashAndProgress((prev) => {
+				const newHashAndProgress = { ...prev };
+				delete newHashAndProgress[`dl:${hash}`];
+				return newHashAndProgress;
+			});
+		}
+	}
+
+	/**
+	 * Sweeps the shown list into Debrid-Link, **as bare hashes**.
+	 *
+	 * This is the one surface where "only land it if it is already cached" is
+	 * the right semantics: a hash list is hundreds of rows and the account's
+	 * whole day is 50 torrents, so sending magnets here would let one click
+	 * start fifty real downloads and burn the quota on releases nobody asked
+	 * for. `handleAddMultipleHashesInDl` paces the adds, counts the misses into
+	 * one summary toast instead of toasting each, and stops the sweep outright
+	 * on `maxTorrent` (every remaining add is refused for the day) or
+	 * `floodDetected` (the endpoint is locked for an hour) rather than spending
+	 * requests to collect the same refusal.
+	 */
+	async function downloadNonDupeTorrentsInDl() {
+		const libraryHashes = await torrentDB.hashes();
+		const yetToDownload = filteredList
+			.filter((t) => !libraryHashes.has(t.hash))
+			.map((t) => t.hash);
+		if (yetToDownload.length === 0) {
+			toast('Everything already downloaded', genericToastOptions);
+			return;
+		}
+
+		await handleAddMultipleHashesInDl(dlKey!, yetToDownload, async () => {
+			await fetchHashAndProgress();
+		});
+	}
+
+	async function addOc(hash: string) {
+		try {
+			await handleAddAsMagnetInOc(ocKey!, hash, async (userTorrent) => {
+				await torrentDB.addAll([userTorrent]);
+				addToCache(userTorrent);
+				await fetchHashAndProgress(hash);
+			});
+		} catch {
+			// handleAddAsMagnetInOc reports its own failure
+		}
+	}
+
+	async function deleteOc(hash: string) {
+		const torrents = await torrentDB.getAllByHash(hash);
+		for (const t of torrents) {
+			if (!t.id.startsWith('oc:')) continue;
+			await handleDeleteOcTorrent(ocKey!, t.id);
+			await torrentDB.deleteByHash('oc', hash);
+			removeFromCache(t.id);
+			setHashAndProgress((prev) => {
+				const newHashAndProgress = { ...prev };
+				delete newHashAndProgress[`oc:${hash}`];
+				return newHashAndProgress;
+			});
+		}
+	}
+
+	function wrapDownloadFilesInOcFn(t: EnrichedHashlistTorrent) {
+		return async () => await addOc(t.hash);
+	}
+
+	async function downloadNonDupeTorrentsInOc() {
+		const libraryHashes = await torrentDB.hashes();
+		const yetToDownload = filteredList
+			.filter((t) => !libraryHashes.has(t.hash))
+			.map(wrapDownloadFilesInOcFn);
+		if (yetToDownload.length === 0) {
+			toast('Everything already downloaded', genericToastOptions);
+			return;
+		}
+
+		const progressToast = toast.loading(`Downloading 0/${yetToDownload.length} torrents...`);
+		const [results, errors] = await runConcurrentFunctions(
+			yetToDownload,
+			4,
+			0,
+			(completed, total, errorCount) => {
+				toast.loading(
+					`Downloading ${completed}/${total} torrents...` +
+						(errorCount ? ` (${errorCount} failed)` : ''),
+					{ id: progressToast }
+				);
+			}
+		);
+		toast.dismiss(progressToast);
+		if (errors.length) {
+			toast.error(`Error downloading ${errors.length} torrents`, genericToastOptions);
+		}
+		if (results.length) {
+			toast.success(
+				`Successfully downloaded ${results.length} torrents`,
+				genericToastOptions
+			);
+		}
+	}
+
 	function wrapDownloadFilesInPmFn(t: EnrichedHashlistTorrent) {
 		return async () => await addPm(t.hash);
 	}
@@ -994,6 +1158,30 @@ function HashlistPage() {
 					</button>
 				)}
 
+				{mounted && ocKey && (
+					<button
+						className={`mb-2 mr-2 rounded border-2 border-[#f97316] bg-[#f97316]/30 px-2 py-1 text-orange-100 transition-colors hover:bg-[#f97316]/50 ${
+							filteredList.length === 0 ? 'cursor-not-allowed opacity-60' : ''
+						}`}
+						onClick={downloadNonDupeTorrentsInOc}
+						disabled={filteredList.length === 0}
+					>
+						OC Download ({filteredList.length})
+					</button>
+				)}
+
+				{mounted && dlKey && (
+					<button
+						className={`mb-2 mr-2 rounded border-2 border-[#38bdf8] bg-[#38bdf8]/30 px-2 py-1 text-sky-100 transition-colors hover:bg-[#38bdf8]/50 ${
+							filteredList.length === 0 ? 'cursor-not-allowed opacity-60' : ''
+						}`}
+						onClick={downloadNonDupeTorrentsInDl}
+						disabled={filteredList.length === 0}
+					>
+						DL Download ({filteredList.length})
+					</button>
+				)}
+
 				{Object.keys(router.query).length !== 0 && (
 					<Link
 						href="/hashlist"
@@ -1003,15 +1191,15 @@ function HashlistPage() {
 					</Link>
 				)}
 
-				{mounted && !rdKey && !adKey && !tbKey && !pmKey && (
+				{mounted && !rdKey && !adKey && !tbKey && !pmKey && !ocKey && !dlKey && (
 					<>
 						<span className="mb-2 mr-2 rounded px-2 py-1 text-white">
-							Login to RD/AD/TB/PM to download
+							Login to RD/AD/TB/PM/OC/DL to download
 						</span>
 					</>
 				)}
 
-				{mounted && (rdKey || adKey || tbKey || pmKey) && (
+				{mounted && (rdKey || adKey || tbKey || pmKey || ocKey || dlKey) && (
 					<span className="text-s mr-2 bg-green-100 px-2.5 py-1 text-green-800">
 						<strong>{userTorrentsList.length - filteredList.length}</strong> hidden
 					</span>
@@ -1229,6 +1417,52 @@ function HashlistPage() {
 											>
 												<Download className="mr-1 inline h-3 w-3" />
 												PM
+											</button>
+										)}
+										{mounted && ocKey && isDownloading('oc', t.hash) && (
+											<button
+												className="ml-2 rounded border-2 border-red-500 bg-red-900/30 px-2 py-1 text-red-100 transition-colors hover:bg-red-800/50"
+												onClick={() => deleteOc(t.hash)}
+											>
+												<X className="mr-1 inline h-3 w-3" />
+												OC ({hashAndProgress[`oc:${t.hash}`] || 0}%)
+											</button>
+										)}
+										{mounted && ocKey && notInLibrary('oc', t.hash) && (
+											<button
+												className={`ml-2 rounded border-2 px-2 py-1 transition-colors ${
+													t.ocAvailable
+														? 'border-green-500 bg-green-900/30 text-green-100 hover:bg-green-800/50'
+														: 'border-[#f97316] bg-[#f97316]/30 text-orange-100 hover:bg-[#f97316]/50'
+												}`}
+												onClick={() => addOc(t.hash)}
+											>
+												<Download className="mr-1 inline h-3 w-3" />
+												OC
+											</button>
+										)}
+										{mounted && dlKey && isDownloading('dl', t.hash) && (
+											<button
+												className="ml-2 rounded border-2 border-red-500 bg-red-900/30 px-2 py-1 text-red-100 transition-colors hover:bg-red-800/50"
+												onClick={() => deleteDl(t.hash)}
+											>
+												<X className="mr-1 inline h-3 w-3" />
+												DL ({hashAndProgress[`dl:${t.hash}`] || 0}%)
+											</button>
+										)}
+										{/*
+										 * One colour, always: there is no `dlAvailable`
+										 * to switch on, so the green "instant" variant
+										 * the other services use would be a claim
+										 * nothing here can make.
+										 */}
+										{mounted && dlKey && notInLibrary('dl', t.hash) && (
+											<button
+												className="ml-2 rounded border-2 border-[#38bdf8] bg-[#38bdf8]/30 px-2 py-1 text-sky-100 transition-colors hover:bg-[#38bdf8]/50"
+												onClick={() => addDl(t.hash)}
+											>
+												<Download className="mr-1 inline h-3 w-3" />
+												DL
 											</button>
 										)}
 									</td>

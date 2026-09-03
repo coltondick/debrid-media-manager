@@ -53,6 +53,8 @@ vi.mock('@/hooks/auth', () => ({
 	useAllDebridApiKey: () => 'test-ad-key',
 	useTorBoxAccessToken: () => 'test-tb-key',
 	usePremiumizeCredential: () => null,
+	useOffcloudApiKey: () => null,
+	useDebridLinkCredential: () => null,
 }));
 
 vi.mock('@/hooks/useRelativeTimeLabel', () => ({
