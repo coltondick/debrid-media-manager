@@ -25,6 +25,15 @@ export interface DebridTransferRecord {
 const KEY_PREFIX = 'tbrd:';
 const keyFor = (originalHash: string) => `${KEY_PREFIX}${originalHash.toLowerCase()}`;
 
+/**
+ * How many `tbrd:` rows the pending scan reads before giving up on finding more.
+ *
+ * Oldest-first, so `pending` rows — whose `updatedAt` is never bumped again —
+ * sort ahead of every `completed` one, and the cap is only ever reached by a
+ * backlog far larger than the 1.8k rows this table holds.
+ */
+const PENDING_SCAN_CAP = 3000;
+
 // A job lives on exactly one server (the one that created it), keyed by job id.
 const JOB_KEY_PREFIX = 'tbjob:';
 const jobKeyFor = (jobId: string) => `${JOB_KEY_PREFIX}${jobId}`;
@@ -79,6 +88,75 @@ export class DebridUploaderMapService extends DatabaseClient {
 			rewrittenHash: rewrittenHash.toLowerCase(),
 			updatedAt: Date.now(),
 		});
+	}
+
+	/**
+	 * The oldest mappings still marked `pending`, for the reconciliation sweep.
+	 *
+	 * Filters the status in JS off a prefix scan rather than with a JSON path
+	 * predicate. Nothing else in this codebase filters on a JSON column, the
+	 * whole prefix is a couple of thousand small rows, and this runs inside a
+	 * cron that must not throw — a dialect mismatch there would be silent.
+	 */
+	async listPending(limit: number): Promise<DebridTransferRecord[]> {
+		if (limit <= 0) return [];
+		const rows = await this.prisma.cache.findMany({
+			where: { key: { startsWith: KEY_PREFIX } },
+			orderBy: { updatedAt: 'asc' },
+			take: PENDING_SCAN_CAP,
+		});
+		const pending: DebridTransferRecord[] = [];
+		for (const row of rows) {
+			const record = row.value as unknown as DebridTransferRecord | null;
+			if (record?.status !== 'pending' || !record.jobId) continue;
+			pending.push(record);
+			if (pending.length >= limit) break;
+		}
+		return pending;
+	}
+
+	/**
+	 * Completed mappings, oldest first — the second half of the sweep.
+	 *
+	 * A mapping goes `completed` as soon as the rewritten hash is known, which
+	 * happens *before* the release is filed into search, and the filing can fail
+	 * on its own (a title with no page to file under, a job whose file list has
+	 * no RD links). Those rows are redeemable — the dedup path hands the content
+	 * to anyone who asks for that magnet — but they appear in no listing, which
+	 * is the half of the complaint that reads as "TB → RD transfers aren't
+	 * showing in the list". 71 of 323 were in that state on 2026-09-03.
+	 */
+	async listCompleted(limit: number): Promise<DebridTransferRecord[]> {
+		if (limit <= 0) return [];
+		const rows = await this.prisma.cache.findMany({
+			where: { key: { startsWith: KEY_PREFIX } },
+			orderBy: { updatedAt: 'asc' },
+			take: PENDING_SCAN_CAP,
+		});
+		const completed: DebridTransferRecord[] = [];
+		for (const row of rows) {
+			const record = row.value as unknown as DebridTransferRecord | null;
+			if (record?.status !== 'completed' || !record.rewrittenHash) continue;
+			completed.push(record);
+			if (completed.length >= limit) break;
+		}
+		return completed;
+	}
+
+	/**
+	 * Move a mapping to the back of its queue without changing what it says.
+	 *
+	 * Both listings read oldest-first, so a row the sweep cannot resolve keeps
+	 * its place at the front and is re-examined every tick. Measured on the
+	 * first production tick, 2026-09-03: 13 of 25 slots went to in-flight jobs
+	 * while debrid02 held ~128 non-terminal ones — more than a whole batch. Left
+	 * alone the sweep would have filled with the same rows and never reached the
+	 * 344 completions it exists to file. Bumping the row on each look makes the
+	 * scan a fair round-robin instead; nothing reads this timestamp for anything
+	 * but that ordering.
+	 */
+	async touchTransfer(record: DebridTransferRecord): Promise<void> {
+		await this.put(record);
 	}
 
 	async removeTransfer(originalHash: string): Promise<void> {

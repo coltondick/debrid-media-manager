@@ -252,6 +252,18 @@ export class Repository {
 		);
 	}
 
+	public listPendingDebridTransfers(limit: number) {
+		return this.debridUploaderMapService.listPending(limit);
+	}
+
+	public listCompletedDebridTransfers(limit: number) {
+		return this.debridUploaderMapService.listCompleted(limit);
+	}
+
+	public touchDebridTransfer(record: Parameters<DebridUploaderMapService['touchTransfer']>[0]) {
+		return this.debridUploaderMapService.touchTransfer(record);
+	}
+
 	public removeDebridTransfer(originalHash: string) {
 		return this.debridUploaderMapService.removeTransfer(originalHash);
 	}
