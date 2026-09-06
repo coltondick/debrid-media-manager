@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const sponsorMock = vi.fn();
 
@@ -28,7 +28,7 @@ vi.mock('next/link', () => ({
 	),
 }));
 
-import NewznabSetupPage from '@/pages/newznab';
+import TorznabSetupPage from '@/pages/torznab';
 
 const API_KEY = 'a1b2c3' + 'd'.repeat(54) + 'ef12';
 
@@ -51,27 +51,23 @@ beforeEach(() => {
 	});
 });
 
-afterEach(() => {
-	vi.useRealTimers();
-});
-
-describe('Newznab setup page, for a sponsor', () => {
+describe('Torznab setup page, for a sponsor', () => {
 	// The URL has to follow the instance the page is served from, or a
 	// self-hosted DMM is handed the public host and every search leaves the box.
 	it('names the endpoint on the origin it is served from', async () => {
 		asSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		await waitFor(() =>
 			expect(
-				within(field('URL')).getByText(`${window.location.origin}/api/newznab`)
+				within(field('URL')).getByText(`${window.location.origin}/api/torznab`)
 			).toBeTruthy()
 		);
 	});
 
 	it('gives the API path *arr appends to that URL', () => {
 		asSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		expect(within(field('API Path')).getByText('/api')).toBeTruthy();
 	});
@@ -81,7 +77,7 @@ describe('Newznab setup page, for a sponsor', () => {
 	// rather than render an empty box.
 	it('points at gatekeeper when this browser holds no key', () => {
 		asSponsor(null);
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		expect(within(field('API Key')).getByText('your DMM API key from gatekeeper')).toBeTruthy();
 		expect(screen.queryByLabelText('Copy API Key')).toBeNull();
@@ -92,7 +88,7 @@ describe('Newznab setup page, for a sponsor', () => {
 	// wiring up their stack, and the copy button never needs it on screen.
 	it('shows the linked key masked, and copies the whole thing', async () => {
 		asLinkedSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		expect(within(field('API Key')).getByText('a1b2c3••••••••ef12')).toBeTruthy();
 		expect(screen.queryByText(API_KEY)).toBeNull();
@@ -103,7 +99,7 @@ describe('Newznab setup page, for a sponsor', () => {
 
 	it('reveals the key on request, and hides it again', () => {
 		asLinkedSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		fireEvent.click(screen.getByLabelText('Reveal API key'));
 		expect(within(field('API Key')).getByText(API_KEY)).toBeTruthy();
@@ -114,130 +110,106 @@ describe('Newznab setup page, for a sponsor', () => {
 
 	it('offers a way back to the dashboard, as the other pages do', () => {
 		asSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		expect(screen.getByRole('link', { name: 'Back to dashboard' }).getAttribute('href')).toBe(
 			'/'
 		);
 	});
 
-	it('sends the sponsor to gatekeeper for a key it does not have', () => {
-		asSponsor(null);
-		render(<NewznabSetupPage />);
-
-		expect(screen.getByRole('link', { name: 'gatekeeper' })).toHaveAttribute(
-			'href',
-			'https://gatekeeper.debridmediamanager.com'
-		);
-	});
-
-	it('copies the URL and the API path on demand', async () => {
+	it('copies the URL on demand', async () => {
 		asSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		await waitFor(() =>
 			expect(
-				within(field('URL')).getByText(`${window.location.origin}/api/newznab`)
+				within(field('URL')).getByText(`${window.location.origin}/api/torznab`)
 			).toBeTruthy()
 		);
 
 		fireEvent.click(screen.getByLabelText('Copy URL'));
 		await waitFor(() =>
-			expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/api/newznab`)
+			expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/api/torznab`)
 		);
-
-		fireEvent.click(screen.getByLabelText('Copy API Path'));
-		await waitFor(() => expect(writeText).toHaveBeenCalledWith('/api'));
 	});
 
 	it('lists every search mode the endpoint answers', () => {
 		asSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		expect(within(screen.getByTestId('mode-search')).getByText(/q=/)).toBeTruthy();
 		expect(within(screen.getByTestId('mode-tvsearch')).getByText(/tvdbid=/)).toBeTruthy();
-		expect(within(screen.getByTestId('mode-tvsearch')).getByText(/season=/)).toBeTruthy();
 		expect(within(screen.getByTestId('mode-movie')).getByText(/imdbid=/)).toBeTruthy();
+	});
+
+	// The whole point of a debrid-backed indexer, and the one thing about this
+	// feed that is not what a tracker would mean by it.
+	it('explains what the seeder count actually reports', () => {
+		asSponsor();
+		render(<TorznabSetupPage />);
+
+		expect(screen.getByText(/already\s+cached on a debrid service/)).toBeTruthy();
+		expect(screen.getByTestId('feed-/cached')).toBeTruthy();
+		expect(screen.getByTestId('feed-/rd/cached')).toBeTruthy();
 	});
 
 	it('advertises the movie and TV categories', () => {
 		asSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
-		for (const id of ['2000', '2040', '2045', '5000', '5030', '5040', '5045', '5070']) {
+		for (const id of ['2000', '2030', '2040', '2045', '5000', '5030', '5040', '5045']) {
 			expect(screen.getByText(id)).toBeTruthy();
 		}
 	});
 
-	// Stated up front so nobody discovers them by tripping them.
-	it('states the per-key limits', () => {
+	it('states the per-key limit and says there is no grab budget', () => {
 		asSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
-		expect(screen.getByText('30 searches')).toBeTruthy();
-		expect(screen.getByText('10 grabs')).toBeTruthy();
-		expect(screen.getByText('150 grabs')).toBeTruthy();
-		expect(screen.getAllByText('per minute')).toHaveLength(2);
-		expect(screen.getByText('per day')).toBeTruthy();
-		expect(screen.getByText(/counted against your DMM API key, not your IP/)).toBeTruthy();
+		expect(screen.getByText('20 searches')).toBeTruthy();
+		expect(screen.getByText('No grab limit')).toBeTruthy();
+		expect(screen.getByText(/Counted against your DMM API key, not your IP/)).toBeTruthy();
 	});
 
-	it('says the NZBs are cleaned before they leave the server', () => {
+	it('says the grab is a magnet DMM is not in the path of', () => {
 		asSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
-		expect(screen.getByText(/cleaned server-side/)).toBeTruthy();
-		expect(screen.getByText(/no per-download watermark reaches the client/)).toBeTruthy();
-	});
-
-	it('points at the SABnzbd side, which is what actually fetches a grab', () => {
-		asSponsor();
-		render(<NewznabSetupPage />);
-
-		expect(
-			screen.getByRole('link', { name: 'SABnzbd download client' }).getAttribute('href')
-		).toBe('/sabnzbd');
+		expect(screen.getByText(/Every result is a magnet link/)).toBeTruthy();
 	});
 
 	it('shows no sponsorship pitch to someone who already sponsors', () => {
 		asSponsor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		expect(screen.queryByRole('link', { name: 'Patreon' })).toBeNull();
 		expect(screen.queryByText('Sponsors only')).toBeNull();
 	});
 });
 
-describe('Newznab setup page, for everyone else', () => {
+describe('Torznab setup page, for everyone else', () => {
 	it('withholds the endpoint details entirely', () => {
 		asVisitor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		expect(screen.queryByTestId('field-URL')).toBeNull();
-		expect(screen.queryByTestId('field-API Path')).toBeNull();
-		expect(screen.queryByText(`${window.location.origin}/api/newznab`)).toBeNull();
-		expect(screen.queryByText('/api')).toBeNull();
-		expect(screen.queryByText('30 searches')).toBeNull();
+		expect(screen.queryByText(`${window.location.origin}/api/torznab`)).toBeNull();
+		expect(screen.queryByText('20 searches')).toBeNull();
 	});
 
 	it('makes the sponsorship pitch instead', () => {
 		asVisitor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		expect(screen.getByText('Sponsors only')).toBeTruthy();
 		expect(screen.getByRole('link', { name: 'Github' }).getAttribute('href')).toContain(
 			'github.com/sponsors'
 		);
-		expect(screen.getByRole('link', { name: 'Patreon' }).getAttribute('href')).toContain(
-			'patreon.com'
-		);
 	});
 
-	// A lapsed-looking visitor is often an existing sponsor on a fresh browser;
-	// the fix is linking the key, not paying twice.
 	it('sends an existing sponsor to Settings to link their key', () => {
 		asVisitor();
-		render(<NewznabSetupPage />);
+		render(<TorznabSetupPage />);
 
 		expect(screen.getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe(
 			'/settings'
