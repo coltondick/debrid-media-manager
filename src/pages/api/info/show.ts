@@ -1,6 +1,8 @@
 import { MRating, MShow } from '@/services/mdblist';
 import { getMdblistClient } from '@/services/mdblistClient';
 import { getMetadataCache } from '@/services/metadataCache';
+import { getOmdbMetadata, getOmdbPoster, getOmdbRating, omdbField } from '@/utils/omdb';
+import { getTmdbAuth, tmdbRequestConfig, tmdbUrl } from '@/utils/tmdbAuth';
 import axios from 'axios';
 import { NextApiRequest, NextApiResponse } from 'next';
 import UserAgent from 'user-agents';
@@ -32,7 +34,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 			},
 		});
 
-		const [mdbResponse, cinemetaResponse] = await Promise.all([mdbPromise, cinePromise]);
+		// Last-resort source for the fields below; resolves to null instead of
+		// rejecting, so it can never fail the request.
+		const omdbPromise = getOmdbMetadata(imdbid);
+
+		const [mdbResponse, cinemetaResponse, omdbResponse] = await Promise.all([
+			mdbPromise,
+			cinePromise,
+			omdbPromise,
+		]);
 
 		const isShowType = (response: any): response is MShow => {
 			return 'seasons' in response;
@@ -104,9 +114,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 					return rating.score as number;
 				}
 				return acc;
-			}, undefined);
+			}, undefined) ??
+			// Left on OMDb's native 0-10 scale, which is what this route returns;
+			// movie.ts reports the same rating out of 100.
+			getOmdbRating(omdbResponse);
 
-		const title = mdbResponse?.title ?? cinemetaResponse?.meta?.name ?? 'Unknown';
+		const title =
+			mdbResponse?.title ??
+			cinemetaResponse?.meta?.name ??
+			omdbField(omdbResponse?.Title) ??
+			'Unknown';
 
 		// Check if specials (season 0) exist
 		const has_specials =
@@ -157,10 +174,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 		const tmdbPromise = mdbResponse?.tmdbid
 			? (async () => {
 					try {
-						const tmdbKey = process.env.TMDB_KEY;
-						if (!tmdbKey) return null;
+						const tmdbAuth = getTmdbAuth();
+						if (!tmdbAuth) return null;
 						const resp = await axios.get(
-							`https://api.themoviedb.org/3/tv/${mdbResponse.tmdbid}?api_key=${tmdbKey}&append_to_response=videos`
+							tmdbUrl(
+								`/tv/${mdbResponse.tmdbid}`,
+								{ append_to_response: 'videos' },
+								tmdbAuth
+							),
+							tmdbRequestConfig(tmdbAuth)
 						);
 						return resp.data;
 					} catch {
@@ -210,8 +232,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
 		const responseData = {
 			title,
-			description: mdbResponse?.description ?? cinemetaResponse?.meta?.description ?? 'n/a',
-			poster: mdbResponse?.poster ?? cinemetaResponse?.meta?.poster ?? '',
+			description:
+				mdbResponse?.description ??
+				cinemetaResponse?.meta?.description ??
+				omdbField(omdbResponse?.Plot) ??
+				'n/a',
+			poster:
+				mdbResponse?.poster ??
+				cinemetaResponse?.meta?.poster ??
+				getOmdbPoster(omdbResponse) ??
+				'',
 			backdrop:
 				mdbResponse?.backdrop ??
 				cinemetaResponse?.meta?.background ??
