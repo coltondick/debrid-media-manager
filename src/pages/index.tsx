@@ -11,7 +11,7 @@ import { useCurrentUser, useDebridLogin } from '@/hooks/auth';
 import { useCastToken } from '@/hooks/castToken';
 import { useTorBoxCastToken } from '@/hooks/torboxCastToken';
 import { getTerms } from '@/utils/browseTerms';
-import { disableGuestMode, useGuestMode } from '@/utils/guestMode';
+import { useGuestMode } from '@/utils/guestMode';
 import { handleLogout } from '@/utils/logout';
 import { checkPremiumStatus } from '@/utils/premiumCheck';
 import { genericToastOptions } from '@/utils/toastOptions';
@@ -183,14 +183,6 @@ function IndexPage() {
 		window.location.assign('/');
 	};
 
-	// Guest mode is the only thing this drops. Anything the browser picked up
-	// while in it - a linked sponsor key, a Trakt login - belongs to the person,
-	// not to the mode, and "Logout All" is still there for clearing those.
-	const handleExitGuestMode = () => {
-		disableGuestMode();
-		router.push('/start');
-	};
-
 	const handleClearLocalStorage = () => {
 		localStorage.clear();
 		// Dispatch logout event to update UI immediately
@@ -278,8 +270,8 @@ function IndexPage() {
 								<p className="font-medium">You are browsing as a guest</p>
 								<p className="mt-1 text-xs text-amber-200/80">
 									Search, settings and the indexer setup pages are open. Your
-									library, casting and transfers need a debrid account - connect
-									one below whenever you want them.
+									library, music, casting and transfers need a debrid account -
+									connect one below whenever you want them.
 								</p>
 							</div>
 						)}
@@ -316,6 +308,21 @@ function IndexPage() {
 							</span>
 							<span className="text-xs text-gray-400">
 								Prowlarr-compatible endpoint for sponsors
+							</span>
+						</Link>
+						<Link
+							href="/jellyfin"
+							className="haptic-sm flex w-full items-center justify-between rounded border-2 border-pink-500/40 bg-gray-800/30 px-4 py-2 text-sm font-medium text-gray-100 transition-colors hover:bg-gray-700/50"
+						>
+							<span className="flex items-center">
+								<span
+									aria-hidden="true"
+									className="mr-2 inline-block h-2 w-2 shrink-0 rounded-full bg-pink-400"
+								/>
+								Jellyfin plugins
+							</span>
+							<span className="text-xs text-gray-400">
+								Your library in Jellyfin, for sponsors
 							</span>
 						</Link>
 						<Link
@@ -376,20 +383,17 @@ function IndexPage() {
 							>
 								Clear library cache
 							</button>
+							{/* One button, whoever is looking at it. Guest mode used
+							    to have its own narrower exit next to this one, and
+							    the pair read as the same action: both landed on
+							    /start, and the difference - whether a linked DMM API
+							    key survived - was invisible from the labels. */}
 							<button
 								onClick={async () => await handleLogout(undefined, router)}
 								className={actionButtonClasses}
 							>
-								Logout All
+								Clear browser data
 							</button>
-							{isGuest && (
-								<button
-									onClick={handleExitGuestMode}
-									className={actionButtonClasses}
-								>
-									Exit guest mode
-								</button>
-							)}
 						</div>
 					</div>
 				</>
