@@ -7,6 +7,7 @@ const sponsorMock = vi.fn();
 vi.mock('@/hooks/useSponsor', () => ({
 	__esModule: true,
 	useSponsor: () => sponsorMock(),
+	sponsorHeaders: () => ({}),
 }));
 
 vi.mock('@/components/Logo', () => ({
@@ -148,9 +149,10 @@ describe('Torznab setup page, for a sponsor', () => {
 		asSponsor();
 		render(<TorznabSetupPage />);
 
-		expect(screen.getByText(/already\s+cached on a debrid service/)).toBeTruthy();
+		expect(screen.getByText(/your debrid account can grab instantly/)).toBeTruthy();
 		expect(screen.getByTestId('feed-/cached')).toBeTruthy();
 		expect(screen.getByTestId('feed-/rd/cached')).toBeTruthy();
+		expect(screen.getByTestId('feed-/tb/cached')).toBeTruthy();
 	});
 
 	it('advertises the movie and TV categories', () => {
@@ -182,8 +184,68 @@ describe('Torznab setup page, for a sponsor', () => {
 		asSponsor();
 		render(<TorznabSetupPage />);
 
-		expect(screen.queryByRole('link', { name: 'Patreon' })).toBeNull();
+		expect(screen.queryByText(/Sponsor this project/)).toBeNull();
 		expect(screen.queryByText('A sponsor feature')).toBeNull();
+	});
+});
+
+describe('Torznab setup page, the feed variants', () => {
+	// The form used to live in Settings, so reading "only what TorBox already
+	// holds" sent you to another page to make it work. It belongs next to the
+	// sentence that explains it.
+	it('offers the provider key form on the page that explains the feeds', () => {
+		asSponsor();
+		render(<TorznabSetupPage />);
+
+		expect(screen.getByLabelText('TorBox API key')).toBeInTheDocument();
+		expect(screen.getByLabelText('Premiumize API key')).toBeInTheDocument();
+		expect(screen.getByLabelText('Offcloud API key')).toBeInTheDocument();
+	});
+
+	it('asks for no key for the caches DMM answers itself', () => {
+		asSponsor();
+		render(<TorznabSetupPage />);
+
+		expect(screen.queryByLabelText(/Real-Debrid API key/)).toBeNull();
+		expect(screen.queryByLabelText(/AllDebrid API key/)).toBeNull();
+		expect(screen.queryByLabelText(/Debrid-Link API key/)).toBeNull();
+	});
+
+	// The suffix list used to be one flat set of five URLs under the heading
+	// "Cached-only variants", three of which did not filter anything. The two
+	// choices are separate, so they are shown separately.
+	it('names each cache the seeder count can come from', () => {
+		asSponsor();
+		render(<TorznabSetupPage />);
+
+		for (const segment of ['any', '/rd', '/ad', '/tb', '/pm', '/oc']) {
+			expect(screen.getByTestId(`source-${segment}`)).toBeTruthy();
+		}
+	});
+
+	it('says which of those need a key linked first', () => {
+		asSponsor();
+		render(<TorznabSetupPage />);
+
+		for (const segment of ['/tb', '/pm', '/oc']) {
+			expect(screen.getByTestId(`source-${segment}`)).toHaveTextContent(
+				'needs your key linked'
+			);
+		}
+		for (const segment of ['any', '/rd', '/ad']) {
+			expect(screen.getByTestId(`source-${segment}`)).not.toHaveTextContent(
+				'needs your key linked'
+			);
+		}
+	});
+
+	// The point most readers need is that they probably need no suffix at all.
+	it('explains that the plain feed already ranks cached releases first', () => {
+		asSponsor();
+		render(<TorznabSetupPage />);
+
+		expect(screen.getByText(/100 seeders/)).toBeTruthy();
+		expect(screen.getByText(/Most people need nothing below this line/)).toBeTruthy();
 	});
 });
 
@@ -214,23 +276,37 @@ describe('Torznab setup page, for everyone else', () => {
 		expect(screen.queryByLabelText('Reveal API key')).toBeNull();
 	});
 
-	it('adds the sponsorship pitch above it', () => {
+	// The pitch used to name Github, Patreon and Paypal side by side. Every way
+	// of paying now goes through gatekeeper, which is also the only place the
+	// DMM API key comes from, so nothing else may be linked here.
+	it('adds the sponsorship pitch above it, pointing only at gatekeeper', () => {
 		asVisitor();
 		render(<TorznabSetupPage />);
 
 		expect(screen.getByText('A sponsor feature')).toBeTruthy();
-		expect(screen.getByRole('link', { name: 'Github' }).getAttribute('href')).toContain(
-			'github.com/sponsors'
+		// Once. The setup guide below used to repeat the whole "connect your
+		// GitHub account on gatekeeper" sentence, so a visitor read the same
+		// instruction twice on one page.
+		expect(screen.getAllByRole('link', { name: 'gatekeeper' })).toHaveLength(1);
+		expect(screen.getByRole('link', { name: 'gatekeeper' }).getAttribute('href')).toBe(
+			'https://gatekeeper.debridmediamanager.com'
 		);
+		for (const link of screen.getAllByRole('link')) {
+			expect(link.getAttribute('href')).not.toMatch(
+				/patreon\.com|paypal\.me|github\.com\/sponsors/
+			);
+		}
 	});
 
 	it('sends an existing sponsor to gatekeeper and then to Settings', () => {
 		asVisitor();
 		render(<TorznabSetupPage />);
 
-		expect(screen.getByRole('link', { name: 'Settings' }).getAttribute('href')).toBe(
-			'/settings'
-		);
+		// Two of them now: the pitch card's, and the one in the feeds card that
+		// explains where a provider key is linked.
+		for (const link of screen.getAllByRole('link', { name: 'Settings' })) {
+			expect(link.getAttribute('href')).toBe('/settings');
+		}
 		for (const link of screen.getAllByRole('link', { name: 'gatekeeper' })) {
 			expect(link.getAttribute('href')).toBe('https://gatekeeper.debridmediamanager.com');
 		}

@@ -91,7 +91,6 @@ vi.mock('@/utils/withAuth', () => ({
 vi.mock('lucide-react', () => ({
 	__esModule: true,
 	FolderTree: () => <svg data-testid="folder-tree-icon" />,
-	Megaphone: () => <svg data-testid="megaphone-icon" />,
 	Settings: () => <svg data-testid="settings-icon" />,
 	Star: () => <svg data-testid="star-icon" />,
 	X: () => <svg data-testid="x-icon" />,
@@ -398,5 +397,21 @@ describe('IndexPage', () => {
 		expect(message).not.toMatch(/in Settings/i);
 		expect(message).not.toMatch(/clear site data/i);
 		expect(message).toMatch(/card below/i);
+	});
+
+	// The megaphone beside the title went to Patreon. gatekeeper replaced it and
+	// then took it away again: the info card below already says where to sponsor,
+	// so a second link in the header was the same offer twice on one page.
+	it('leaves the sponsorship offer to the info card alone', () => {
+		currentUserMock.mockReturnValue(settledFixture);
+
+		render(<IndexPage />);
+
+		expect(screen.queryByRole('link', { name: 'Sponsor DMM' })).toBeNull();
+		for (const link of screen.getAllByRole('link')) {
+			expect(link.getAttribute('href')).not.toMatch(
+				/patreon\.com|paypal\.me|github\.com\/sponsors|gatekeeper\./
+			);
+		}
 	});
 });
