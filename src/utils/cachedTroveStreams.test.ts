@@ -1,7 +1,12 @@
 import type { ScrapeSearchResult } from '@/services/mediasearch';
 import { repository } from '@/services/repository';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { filterTroveCandidates, getTroveCandidates } from './cachedTroveStreams';
+import {
+	filterSeasonEpisodes,
+	filterSeasonPacks,
+	filterTroveCandidates,
+	getTroveCandidates,
+} from './cachedTroveStreams';
 
 vi.mock('@/services/repository');
 
@@ -101,6 +106,55 @@ describe('filterTroveCandidates', () => {
 		expect(out.map((c) => c.hash)).toEqual(['aaa']);
 	});
 
+	it('does not offer a season pack as a single episode', () => {
+		// The addon offers a bare hash and playing it hands back the torrent's
+		// biggest file, so a pack served as episode two plays whichever episode
+		// happens to be largest. `ptt` calls each of these a single episode:
+		// `x2` is a disc count, `2xRus` an audio track, `3D` a format.
+		const cases: [string, string][] = [
+			['aaa', 'Friends S01 x2 Untouched BD100 Caver'],
+			['bbb', 'The.Wire.S02.720p.WEB-DL.2xRus.Eng.HDCLUB'],
+			['ccc', 'Breaking.Bad.S02.1080p.3D.FULL-SBS.HEVC'],
+		];
+		for (const [hash, title] of cases) {
+			const out = filterTroveCandidates(rows([hash, title, 40000]), {
+				mediaType: 'series',
+				imdbId: 'tt500:2:2',
+			});
+			expect(out, title).toEqual([]);
+		}
+	});
+
+	it('does not offer a multi-season pack as an episode of one of them', () => {
+		const out = filterTroveCandidates(
+			rows(['aaa', 'Friends Season 1 - 3 1080p BDrip AC3 5.1', 90000]),
+			{ mediaType: 'series', imdbId: 'tt500:1:3' }
+		);
+		expect(out).toEqual([]);
+	});
+
+	it('does not offer a release that spans several episodes', () => {
+		// It would play the biggest of the three, not the one clicked.
+		const out = filterTroveCandidates(rows(['aaa', 'Show.S01E01-E03.1080p.WEB', 12000]), {
+			mediaType: 'series',
+			imdbId: 'tt500:1:1',
+		});
+		expect(out).toEqual([]);
+	});
+
+	it('still offers a plain single episode, padded or not', () => {
+		for (const title of ['Show.S01E02.1080p.WEB.h265', 'Show.S1E2.1080p.WEB.h265']) {
+			const out = filterTroveCandidates(rows(['aaa', title, 4000]), {
+				mediaType: 'series',
+				imdbId: 'tt500:1:2',
+			});
+			expect(
+				out.map((c) => c.hash),
+				title
+			).toEqual(['aaa']);
+		}
+	});
+
 	it('rejects a series id without season and episode', () => {
 		const out = filterTroveCandidates(rows(['aaa', 'Show.S01E02.1080p', 4000]), {
 			mediaType: 'series',
@@ -138,5 +192,116 @@ describe('getTroveCandidates', () => {
 		await getTroveCandidates({ mediaType: 'series', imdbId: 'tt500:2:7' });
 
 		expect(mockRepository.getAllScrapedTrueResults).toHaveBeenCalledWith('tv:tt500:2');
+	});
+});
+
+describe('filterSeasonPacks', () => {
+	it('keeps the releases that name the whole season', () => {
+		const out = filterSeasonPacks(
+			rows(
+				['aaa', 'The.Wire.S03.1080p.BluRay.x264-GROUP', 40000],
+				['bbb', 'The.Wire.S03E04.1080p.BluRay.x264-GROUP', 3000]
+			),
+			{ season: 3 }
+		);
+		expect(out.map((c) => c.hash)).toEqual(['aaa']);
+	});
+
+	it('keeps a series pack, which names no single season at all', () => {
+		// `ptt` reports `S01-S05` as `seasons: [1..5]` with `season` undefined,
+		// so the episode filter's `parsed.season === season` test drops it. These
+		// are the releases most likely to answer a whole show in one add.
+		const out = filterSeasonPacks(
+			rows(['aaa', 'The Wire S01-S05 COMPLETE 1080p BluRay x264', 200000]),
+			{ season: 3 }
+		);
+		expect(out.map((c) => c.hash)).toEqual(['aaa']);
+		expect(out[0].seasons).toEqual([1, 2, 3, 4, 5]);
+	});
+
+	it('does not offer a supplement release as the season', () => {
+		// Both parse as plain season three with no episode; nothing in the
+		// numbers separates them from a real pack.
+		const out = filterSeasonPacks(
+			rows(
+				['aaa', 'The.Wire.S03.EXTRAS.1080p', 20000],
+				['bbb', 'The.Wire.S03.SUBPACK', 15000],
+				['ccc', 'The.Wire.S03.1080p.BluRay.x264-GROUP', 40000]
+			),
+			{ season: 3 }
+		);
+		expect(out.map((c) => c.hash)).toEqual(['ccc']);
+	});
+
+	it('does not offer a half-season pack as the season', () => {
+		const out = filterSeasonPacks(rows(['aaa', 'The.Wire.S03.Part.1.1080p', 20000]), {
+			season: 3,
+		});
+		expect(out).toEqual([]);
+	});
+
+	it('ignores a pack for another season', () => {
+		const out = filterSeasonPacks(rows(['aaa', 'The.Wire.S04.1080p.BluRay.x264', 40000]), {
+			season: 3,
+		});
+		expect(out).toEqual([]);
+	});
+});
+
+describe('filterSeasonEpisodes', () => {
+	it('buckets single episodes by the episode they name', () => {
+		const out = filterSeasonEpisodes(
+			rows(
+				['aaa', 'The.Wire.S03E01.1080p.BluRay.x264-GROUP', 3000],
+				['bbb', 'The.Wire.S03E02.1080p.BluRay.x264-GROUP', 3100],
+				['ccc', 'The.Wire.S03.1080p.BluRay.x264-GROUP', 40000]
+			),
+			{ season: 3 }
+		);
+		expect([...out.keys()].sort((a, b) => a - b)).toEqual([1, 2]);
+		expect(out.get(1)?.map((c) => c.hash)).toEqual(['aaa']);
+	});
+
+	it('files a multi-episode release under every episode it covers', () => {
+		const out = filterSeasonEpisodes(rows(['aaa', 'The.Wire.S03E01-E03.1080p', 9000]), {
+			season: 3,
+		});
+		expect([...out.keys()].sort((a, b) => a - b)).toEqual([1, 2, 3]);
+		expect(out.get(2)?.[0].episodes).toEqual([1, 2, 3]);
+	});
+
+	it('deduplicates sizes per episode, not across the season', () => {
+		// Consecutive episodes of one encode legitimately weigh the same. A set
+		// shared across the season would keep episode one and silently drop
+		// every other episode of that release group.
+		const out = filterSeasonEpisodes(
+			rows(
+				['aaa', 'The.Wire.S03E01.1080p.BluRay.x264-GROUP', 3000],
+				['bbb', 'The.Wire.S03E02.1080p.BluRay.x264-GROUP', 3000],
+				['ccc', 'The.Wire.S03E03.1080p.BluRay.x264-GROUP', 3000]
+			),
+			{ season: 3 }
+		);
+		expect([...out.keys()].sort((a, b) => a - b)).toEqual([1, 2, 3]);
+	});
+
+	it('keeps only the biggest few per episode', () => {
+		const out = filterSeasonEpisodes(
+			rows(
+				['aaa', 'The.Wire.S03E01.720p.x264', 1000],
+				['bbb', 'The.Wire.S03E01.1080p.x264', 3000],
+				['ccc', 'The.Wire.S03E01.2160p.x265', 9000],
+				['ddd', 'The.Wire.S03E01.480p.x264', 500]
+			),
+			{ season: 3, maxCount: 2 }
+		);
+		expect(out.get(1)?.map((c) => c.hash)).toEqual(['ccc', 'bbb']);
+	});
+
+	it('ignores episodes of another season', () => {
+		const out = filterSeasonEpisodes(rows(['aaa', 'The.Wire.S04E01.1080p.x264', 3000]), {
+			season: 3,
+		});
+		expect(out.size).toBe(0);
 	});
 });

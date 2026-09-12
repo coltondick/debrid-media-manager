@@ -1,7 +1,12 @@
 import type { ScrapeSearchResult } from '@/services/mediasearch';
 import { repository } from '@/services/repository';
 import { MAX_SIZE_MB, MIN_SIZE_MB } from '@/utils/releaseSize';
-import ptt from 'parse-torrent-title';
+import {
+	episodesNamedForSeason,
+	namedSeasons,
+	titleNamesNoEpisode,
+	titleNamesSeason,
+} from '@/utils/seasonNaming';
 
 export interface TroveStreamCandidate {
 	hash: string;
@@ -31,6 +36,38 @@ const isFinitePositive = (value: unknown): value is number =>
 	typeof value === 'number' && Number.isFinite(value) && value > 0;
 
 /**
+ * The row checks every reader of the scraped pool applies before it looks at
+ * what the title names: a usable hash and title, a size that is neither junk
+ * nor scraper unit noise, no Cyrillic lead (the detail page's SQL drops those),
+ * and the caller's ceiling.
+ */
+const passesRowHygiene = (
+	row: ScrapeSearchResult | undefined,
+	ceilingMb: number | undefined
+): row is ScrapeSearchResult => {
+	if (typeof row?.hash !== 'string' || typeof row?.title !== 'string') return false;
+	const sizeMb = row.fileSize;
+	if (!isFinitePositive(sizeMb) || sizeMb <= MIN_SIZE_MB) return false;
+	if (sizeMb > MAX_SIZE_MB) return false;
+	if (HIDDEN_TITLE_LEAD.test(row.title)) return false;
+	if (ceilingMb !== undefined && sizeMb > ceilingMb) return false;
+	return true;
+};
+
+/**
+ * Releases that bundle a season's supplements rather than its episodes.
+ *
+ * `ptt` reads `The.Wire.S03.EXTRAS.1080p` and `The.Wire.S03.SUBPACK` as plain
+ * season three with no episode - indistinguishable from a real pack by its
+ * numbers alone, and measured so on 2026-09-12. Offering one as the season
+ * hands back a disc of deleted scenes.
+ */
+const SUPPLEMENT_RELEASE = /\b(?:extras?|subpack|sample|subs|subtitles|bonus)\b/i;
+
+/** Half-season packs, which name a season but carry part of it. */
+const PARTIAL_SEASON_RELEASE = /\b(?:part|pt)\.?\s*\d+\b/i;
+
+/**
  * Picks the releases a Stremio addon may offer from DMM's scraped pool.
  *
  * Movies pass every release through. Series keep only releases whose *title*
@@ -58,18 +95,24 @@ export function filterTroveCandidates(
 	const candidates: TroveStreamCandidate[] = [];
 	const seenSizes = new Set<number>();
 	for (const row of rows) {
-		if (typeof row?.hash !== 'string' || typeof row?.title !== 'string') continue;
+		if (!passesRowHygiene(row, ceilingMb)) continue;
 		const sizeMb = row.fileSize;
-		if (!isFinitePositive(sizeMb) || sizeMb <= MIN_SIZE_MB) continue;
-		if (sizeMb > MAX_SIZE_MB) continue;
-		if (HIDDEN_TITLE_LEAD.test(row.title)) continue;
-		if (ceilingMb !== undefined && sizeMb > ceilingMb) continue;
 
 		if (season !== undefined && episode !== undefined) {
-			const parsed = ptt.parse(row.title);
-			// A pack ("S01") or a date-style episode has no episode number to
-			// match; anything without both numbers cannot name this video.
-			if (parsed.season !== season || parsed.episode !== episode) continue;
+			// The title has to name this episode and no other. The addon offers a
+			// bare hash, and playing it hands back the torrent's *biggest file*
+			// (see the trove loop in the stream routes) - so a release covering
+			// more than one episode serves whichever of them is largest, not the
+			// one the viewer clicked. A pack or a date-style episode names no
+			// episode at all and cannot be this video either.
+			//
+			// `ptt` alone is not enough for the same reason it is not enough for
+			// the season page's own adds: it reads an episode number out of
+			// `2xRus`, `3D` and `Cap. 101`, so it called 42% of a 4,498-title
+			// corpus's season packs single episodes. Offering one of those as
+			// episode two plays an arbitrary episode of the whole season.
+			const named = episodesNamedForSeason(row.title, season);
+			if (named.length !== 1 || named[0] !== episode) continue;
 		}
 
 		// The same release is routinely scraped under several infohashes with
@@ -102,4 +145,128 @@ export async function getTroveCandidates(
 			? `tv:${options.imdbId.split(':')[0]}:${options.imdbId.split(':')[1]}`
 			: `movie:${options.imdbId}`;
 	return filterTroveCandidates(await repository.getAllScrapedTrueResults(key), options);
+}
+
+/** A release that names one or more whole seasons, with no episode of its own. */
+export interface SeasonPackCandidate extends TroveStreamCandidate {
+	/** Every season the title claims; a series pack claims several. */
+	seasons: number[];
+}
+
+/** A release that names specific episodes of one season. */
+export interface SeasonEpisodeCandidate extends TroveStreamCandidate {
+	/** Every episode the title claims; a two-parter covers both at once. */
+	episodes: number[];
+}
+
+export interface SeasonFilterOptions {
+	season: number;
+	maxSizeGb?: number;
+	maxCount?: number;
+}
+
+/** Packs are few per season and the client only ever tries the first that sticks. */
+const DEFAULT_PACK_COUNT = 15;
+/** Per episode, not per season: three is enough to survive two false positives. */
+const DEFAULT_EPISODE_COUNT = 3;
+
+/**
+ * The releases that claim a whole season, biggest first.
+ *
+ * `ptt` reports a single-season pack as `season: 3` and a series pack as
+ * `seasons: [1..5]` with no `season` at all, so reading `season` alone would
+ * drop every `S01-S05` release - the ones most likely to answer a whole show
+ * in one add. Anything naming an episode is not a pack, and supplement and
+ * half-season releases are excluded by name because `ptt` gives no flag for
+ * either.
+ */
+export function filterSeasonPacks(
+	rows: ScrapeSearchResult[] | null | undefined,
+	{ season, maxSizeGb, maxCount = DEFAULT_PACK_COUNT }: SeasonFilterOptions
+): SeasonPackCandidate[] {
+	if (!rows || rows.length === 0) return [];
+	const ceilingMb = isFinitePositive(maxSizeGb) ? maxSizeGb * 1024 : undefined;
+
+	const candidates: SeasonPackCandidate[] = [];
+	const seenSizes = new Set<number>();
+	for (const row of rows) {
+		if (!passesRowHygiene(row, ceilingMb)) continue;
+		if (SUPPLEMENT_RELEASE.test(row.title)) continue;
+		if (PARTIAL_SEASON_RELEASE.test(row.title)) continue;
+
+		// The title has to say so itself. `ptt` alone both loses real packs and
+		// invents episodes in them - `The.Wire.S02.720p.WEB-DL.2xRus` comes back
+		// as season two episode two, which drops it from here and offers it as a
+		// single episode instead. See `seasonNaming`.
+		if (!titleNamesSeason(row.title, season)) continue;
+		if (!titleNamesNoEpisode(row.title)) continue;
+
+		const sizeKey = Math.round(row.fileSize);
+		if (seenSizes.has(sizeKey)) continue;
+		seenSizes.add(sizeKey);
+
+		const seasons = [...namedSeasons(row.title)].sort((a, b) => a - b);
+		candidates.push({ hash: row.hash, title: row.title, sizeMb: row.fileSize, seasons });
+	}
+
+	candidates.sort((a, b) => b.sizeMb - a.sizeMb);
+	return candidates.slice(0, maxCount);
+}
+
+/**
+ * The season's single-episode releases, bucketed by the episode they name.
+ *
+ * A release that spans episodes (`S03E01-E03`) is filed under each one it
+ * covers, so a run filling gaps can satisfy three of them with one add; the
+ * caller reads `episodes` to know what it just got. Sizes are deduplicated per
+ * bucket rather than across the season, because consecutive episodes of one
+ * encode legitimately weigh the same and a shared set would drop all but one.
+ */
+export function filterSeasonEpisodes(
+	rows: ScrapeSearchResult[] | null | undefined,
+	{ season, maxSizeGb, maxCount = DEFAULT_EPISODE_COUNT }: SeasonFilterOptions
+): Map<number, SeasonEpisodeCandidate[]> {
+	const buckets = new Map<number, SeasonEpisodeCandidate[]>();
+	if (!rows || rows.length === 0) return buckets;
+	const ceilingMb = isFinitePositive(maxSizeGb) ? maxSizeGb * 1024 : undefined;
+
+	const seenSizesByEpisode = new Map<number, Set<number>>();
+	for (const row of rows) {
+		if (!passesRowHygiene(row, ceilingMb)) continue;
+		if (SUPPLEMENT_RELEASE.test(row.title)) continue;
+
+		// Only `SxxEyy` and `NxM` prove a season and an episode together, and
+		// nothing else may stand in: 42% of what `ptt` called single episodes
+		// over the live corpus were season packs whose names happened to contain
+		// `2xRus`, `3D` or `Cap. 101`. Adding one of those as "episode two"
+		// pulls down a whole season and then asks for eleven more.
+		const episodes = episodesNamedForSeason(row.title, season);
+		if (episodes.length === 0) continue;
+
+		const sizeKey = Math.round(row.fileSize);
+		for (const episode of episodes) {
+			let seen = seenSizesByEpisode.get(episode);
+			if (!seen) {
+				seen = new Set<number>();
+				seenSizesByEpisode.set(episode, seen);
+			}
+			if (seen.has(sizeKey)) continue;
+			seen.add(sizeKey);
+
+			const bucket = buckets.get(episode) ?? [];
+			bucket.push({
+				hash: row.hash,
+				title: row.title,
+				sizeMb: row.fileSize,
+				episodes,
+			});
+			buckets.set(episode, bucket);
+		}
+	}
+
+	for (const [episode, bucket] of buckets) {
+		bucket.sort((a, b) => b.sizeMb - a.sizeMb);
+		buckets.set(episode, bucket.slice(0, maxCount));
+	}
+	return buckets;
 }

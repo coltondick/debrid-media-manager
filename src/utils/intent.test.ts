@@ -124,6 +124,29 @@ describe('buildPlayerIntent', () => {
 		expect(buildPlayerIntent(os, 'infuse', url, 'fallback')).toBe(expected);
 	});
 
+	// SenPlayer's x-callback-url action is `play`, not VidHub's `open`, and it
+	// takes the stream URL as a query parameter — so the URL has to be encoded
+	// rather than pasted in raw.
+	// SenPlayer ships one app for iOS, tvOS and macOS, so the Mac entry answers
+	// the same action — the os key exists only so the Settings list can group it.
+	it.each(['ios3', 'mac5'])('builds a SenPlayer intent for %s', (os) => {
+		expect(buildPlayerIntent(os, 'senplayer', url, 'fallback')).toBe(
+			`senplayer://x-callback-url/play?url=${encodeURIComponent(url)}`
+		);
+	});
+
+	// A TorBox download URL carries its own credential in a query string. Pasted
+	// in raw, its `&` starts a second parameter of the *intent* and the player
+	// receives a truncated, unauthenticated link.
+	it('keeps a query-bearing stream URL whole for SenPlayer', () => {
+		const withQuery = 'https://store-01.torbox.app/dl/movie.mkv?token=abc123&redirect=true';
+
+		const intent = buildPlayerIntent('ios3', 'senplayer', withQuery, 'fallback');
+
+		expect(intent).toBe(`senplayer://x-callback-url/play?url=${encodeURIComponent(withQuery)}`);
+		expect(new URL(intent).searchParams.get('url')).toBe(withQuery);
+	});
+
 	it('uses the caller-supplied fallback for an unknown os', () => {
 		expect(buildPlayerIntent('realdebrid', 'infuse', url, 'https://fallback')).toBe(
 			'https://fallback'
